@@ -1,6 +1,6 @@
-# Video Marquee
+# Showreel
 
-A small, **purely-web** video marquee / digital-signage tool. Browse the clips in
+A small, **purely-web** showreel / digital-signage tool. Browse the clips in
 a folder, trim each one and give it a title, choose how the playlist should run,
 and play it back full-screen with the title pinned as a headline at the top.
 
@@ -34,7 +34,7 @@ so you can drop new clips in at any time.
    (`12.5` or `1:23.4`), or with **Set** to grab the preview's current frame.
 3. **Options** (right) — playback mode, a toggle for the title headline,
    start-muted, and JSON **Export / Import** of your whole configuration.
-4. **▶ Play fullscreen** (top right) — runs the marquee.
+4. **▶ Play fullscreen** (top right) — runs the showreel.
 
 ### Playback modes
 

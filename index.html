@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Showreel</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- ===================== APP SHELL ===================== -->
+  <div id="shell" class="shell">
+    <header class="appbar">
+      <h1 class="appbar__title">
+        <span class="appbar__logo" aria-hidden="true">▶</span> Showreel
+      </h1>
+
+      <!-- Narrow-viewport tab bar (hidden on wide screens via CSS) -->
+      <div class="tabbar" role="tablist" aria-label="Panels">
+        <button class="tab" role="tab" data-pane="library" aria-selected="true">Library</button>
+        <button class="tab" role="tab" data-pane="authoring" aria-selected="false">Edit</button>
+        <button class="tab" role="tab" data-pane="options" aria-selected="false">Options</button>
+      </div>
+
+      <div class="appbar__actions">
+        <span id="sessionSummary" class="appbar__summary" aria-live="polite"></span>
+        <button id="playBtn" class="btn btn--primary" type="button" disabled
+                aria-describedby="playBlockers">
+          ▶ Play fullscreen
+        </button>
+      </div>
+    </header>
+
+    <main class="panes">
+      <!-- ===================== LIBRARY (req 1) ===================== -->
+      <nav id="libraryPane" class="pane pane--library is-active" aria-label="Video library" data-pane="library">
+        <div class="pane__head">
+          <h2 class="pane__title">Library</h2>
+          <button id="reloadBtn" class="btn btn--ghost btn--sm" type="button"
+                  aria-label="Rescan the videos folder">⟳ Rescan</button>
+        </div>
+        <ul id="libraryList" class="library" role="listbox" aria-label="Videos" tabindex="0"></ul>
+        <div id="libraryEmpty" class="empty" hidden>
+          <p class="empty__title">No videos found</p>
+          <p class="empty__body">Drop <code>.mp4</code>, <code>.mov</code> or <code>.webm</code>
+             files into the <code>videos/</code> folder, then rescan.</p>
+          <button class="btn" type="button" data-action="reload">⟳ Rescan</button>
+        </div>
+      </nav>
+
+      <!-- ===================== AUTHORING (req 2) ===================== -->
+      <section id="authoringPane" class="pane pane--authoring" aria-label="Authoring" data-pane="authoring">
+        <div id="authoringEmpty" class="empty">
+          <p class="empty__title">Select a video</p>
+          <p class="empty__body">Pick a clip from the library to set its title and trim its
+             start / end points.</p>
+        </div>
+
+        <div id="authoringEditor" class="editor" hidden>
+          <div class="editor__preview">
+            <video id="previewVideo" class="preview-video" preload="metadata"
+                   muted playsinline controls></video>
+          </div>
+
+          <div class="editor__fields">
+            <label class="field">
+              <span class="field__label">Title <span class="req" aria-hidden="true">*</span></span>
+              <input id="titleInput" class="field__input" type="text" maxlength="120"
+                     required aria-required="true" aria-describedby="titleError"
+                     placeholder="Title shown for the first seconds" />
+              <span id="titleError" class="inline-error" role="alert" hidden>A title is required.</span>
+            </label>
+
+            <!-- Dual-handle trim (two native range inputs => keyboard + AT operable) -->
+            <div class="trim" role="group" aria-label="Trim start and end">
+              <div class="trim__track">
+                <div id="trimFill" class="trim__fill"></div>
+                <div id="trimPlayhead" class="trim__playhead" hidden></div>
+                <input id="rangeIn" class="trim__range trim__range--in" type="range"
+                       min="0" max="100" step="0.01" value="0" aria-label="Start point (in)" />
+                <input id="rangeOut" class="trim__range trim__range--out" type="range"
+                       min="0" max="100" step="0.01" value="100" aria-label="End point (out)" />
+              </div>
+            </div>
+
+            <div class="editor__times">
+              <label class="field field--inline">
+                <span class="field__label">Start (s)</span>
+                <input id="inInput" class="field__input field__input--num" type="text"
+                       inputmode="decimal" aria-describedby="inOutError" />
+                <button id="setInBtn" class="btn btn--ghost btn--sm" type="button"
+                        aria-label="Set start to current preview time">⇤ Set</button>
+              </label>
+              <label class="field field--inline">
+                <span class="field__label">End (s)</span>
+                <input id="outInput" class="field__input field__input--num" type="text"
+                       inputmode="decimal" aria-describedby="inOutError" />
+                <button id="setOutBtn" class="btn btn--ghost btn--sm" type="button"
+                        aria-label="Set end to current preview time">Set ⇥</button>
+              </label>
+            </div>
+            <span id="inOutError" class="inline-error" role="alert" hidden></span>
+
+            <div class="editor__readout">
+              <span>Plays <strong id="trimmedDuration">—</strong></span>
+              <span class="muted">of <span id="fullDuration">—</span> total</span>
+              <button id="playTrimmedBtn" class="btn btn--ghost btn--sm" type="button">▶ Preview trim</button>
+            </div>
+
+            <label class="field field--check">
+              <input id="enabledInput" type="checkbox" checked />
+              <span>Include this clip in the showreel</span>
+            </label>
+
+            <button id="forgetBtn" class="btn btn--ghost btn--sm" type="button" hidden>
+              🗑 remove this video
+            </button>
+
+            <p id="saveStatus" class="save-status" aria-live="polite"></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== OPTIONS (req 3) ===================== -->
+      <aside id="optionsPane" class="pane pane--options" aria-label="Playback options" data-pane="options">
+        <div class="pane__head"><h2 class="pane__title">Options</h2></div>
+
+        <fieldset class="optgroup">
+          <legend>Playback mode</legend>
+          <label class="radio"><input type="radio" name="mode" value="sequential-loop" />
+            <span><strong>Sequential, loop</strong><small>In order, repeats forever</small></span></label>
+          <label class="radio"><input type="radio" name="mode" value="sequential-once" />
+            <span><strong>Sequential, once</strong><small>In order, stops at the end</small></span></label>
+          <label class="radio"><input type="radio" name="mode" value="shuffle" />
+            <span><strong>Shuffle, once</strong><small>Random — each clip exactly once</small></span></label>
+          <label class="radio"><input type="radio" name="mode" value="shuffle-loop" />
+            <span><strong>Shuffle, loop</strong><small>Reshuffles each cycle, no repeat across the seam</small></span></label>
+        </fieldset>
+
+        <fieldset class="optgroup">
+          <legend>Title headline</legend>
+          <label class="field field--check">
+            <input id="overlayEnabled" type="checkbox" checked />
+            <span>Show the title as a headline at the top during playback</span>
+          </label>
+        </fieldset>
+
+        <fieldset class="optgroup">
+          <legend>Audio</legend>
+          <label class="field field--check">
+            <input id="startMuted" type="checkbox" />
+            <span>Start muted</span>
+          </label>
+          <p class="hint muted">Press <kbd>M</kbd> during playback to toggle sound.</p>
+        </fieldset>
+
+        <div class="optgroup">
+          <p id="playBlockers" class="play-blockers" aria-live="polite"></p>
+        </div>
+
+        <fieldset class="optgroup">
+          <legend>Config</legend>
+          <div class="btn-row">
+            <button id="exportBtn" class="btn btn--ghost btn--sm" type="button">⤓ Export JSON</button>
+            <button id="importBtn" class="btn btn--ghost btn--sm" type="button">⤒ Import JSON</button>
+            <input id="importInput" type="file" accept="application/json,.json" hidden />
+          </div>
+        </fieldset>
+      </aside>
+    </main>
+  </div>
+
+  <!-- ===================== FULLSCREEN PLAYER (req 4) ===================== -->
+  <div id="player" class="player" hidden tabindex="-1" aria-label="Showreel playback" role="region">
+    <video id="videoA" class="player__video is-active" playsinline></video>
+    <video id="videoB" class="player__video" playsinline></video>
+
+    <div id="titleOverlay" class="title-overlay" role="status" aria-live="polite"></div>
+    <div id="playerNotice" class="player-notice" role="status" aria-live="polite"></div>
+
+    <div id="controlHint" class="control-hint">
+      <span id="clipProgress" class="control-hint__progress"></span>
+      <span class="control-hint__keys">
+        <kbd>Esc</kbd> exit · <kbd>Space</kbd> pause · <kbd>←</kbd>/<kbd>→</kbd> clip ·
+        <kbd>↑</kbd>/<kbd>↓</kbd> volume · <kbd>M</kbd> mute
+      </span>
+      <button id="exitBtn" class="btn btn--ghost btn--sm" type="button">✕ Exit</button>
+    </div>
+  </div>
+
+  <!-- ===================== TOASTS + LIVE REGIONS ===================== -->
+  <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+  <div id="liveAssertive" class="visually-hidden" role="alert" aria-live="assertive"></div>
+
+  <!-- ===================== MODALS ===================== -->
+  <div id="modalRoot"></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

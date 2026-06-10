@@ -1,0 +1,9 @@
+{
+  "name": "showreel",
+  "version": "1.0.0",
+  "description": "A purely-web tool to trim video clips and play them back-to-back, fullscreen, as a looping showreel.",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  }
+}

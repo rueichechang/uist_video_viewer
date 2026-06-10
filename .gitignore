@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Local media — drop your own clips into videos/ (see README); not committed
+videos/*.mp4
+videos/*.m4v
+videos/*.mov
+videos/*.webm
+videos/*.ogv
+videos/*.ogg
+
+# Local backups
+*.bak

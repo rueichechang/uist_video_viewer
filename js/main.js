@@ -1,0 +1,130 @@
+// main.js — entry point. Wires the store, player engine, and UI together.
+
+import { store } from './store.js';
+import { player } from './player.js';
+import { ui } from './ui.js';
+
+const byId = (id) => document.getElementById(id);
+
+const refs = {
+  // shell / appbar
+  shell: byId('shell'),
+  playBtn: byId('playBtn'),
+  sessionSummary: byId('sessionSummary'),
+  reloadBtn: byId('reloadBtn'),
+
+  // library
+  libraryList: byId('libraryList'),
+  libraryEmpty: byId('libraryEmpty'),
+
+  // authoring
+  authoringEmpty: byId('authoringEmpty'),
+  authoringEditor: byId('authoringEditor'),
+  previewVideo: byId('previewVideo'),
+  titleInput: byId('titleInput'),
+  titleError: byId('titleError'),
+  rangeIn: byId('rangeIn'),
+  rangeOut: byId('rangeOut'),
+  trimFill: byId('trimFill'),
+  trimPlayhead: byId('trimPlayhead'),
+  inInput: byId('inInput'),
+  outInput: byId('outInput'),
+  inOutError: byId('inOutError'),
+  setInBtn: byId('setInBtn'),
+  setOutBtn: byId('setOutBtn'),
+  trimmedDuration: byId('trimmedDuration'),
+  fullDuration: byId('fullDuration'),
+  playTrimmedBtn: byId('playTrimmedBtn'),
+  enabledInput: byId('enabledInput'),
+  forgetBtn: byId('forgetBtn'),
+  saveStatus: byId('saveStatus'),
+
+  // options
+  optionsPane: byId('optionsPane'),
+  overlayEnabled: byId('overlayEnabled'),
+  startMuted: byId('startMuted'),
+  playBlockers: byId('playBlockers'),
+  exportBtn: byId('exportBtn'),
+  importBtn: byId('importBtn'),
+  importInput: byId('importInput'),
+
+  // player
+  container: byId('player'),
+  videoA: byId('videoA'),
+  videoB: byId('videoB'),
+  titleOverlay: byId('titleOverlay'),
+  clipProgress: byId('clipProgress'),
+  controlHint: byId('controlHint'),
+  exitBtn: byId('exitBtn'),
+
+  // global
+  toasts: byId('toasts'),
+  liveAssertive: byId('liveAssertive'),
+  modalRoot: byId('modalRoot'),
+};
+
+function startPlayback() {
+  const playlist = ui.buildPlaylist();
+  if (!playlist.length) return;
+  // Synchronous within the click gesture so fullscreen is granted.
+  player.start(playlist, { ...store.options });
+}
+
+async function loadLibrary() {
+  let videos = [];
+  try {
+    const res = await fetch('/api/videos', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    videos = Array.isArray(data.videos) ? data.videos : [];
+  } catch (err) {
+    ui.toast('Could not reach the server. Run "node server.js" and reload.', 'bad');
+  }
+  store.reconcile(videos);
+  ui.refreshAll();
+  ui.scanDurations();
+}
+
+function init() {
+  store.load();
+
+  player.init({
+    container: refs.container,
+    videoA: refs.videoA,
+    videoB: refs.videoB,
+    titleOverlay: refs.titleOverlay,
+    clipProgress: refs.clipProgress,
+    controlHint: refs.controlHint,
+    exitBtn: refs.exitBtn,
+    shell: refs.shell,
+    onStop: (summary) => { ui.showSummary(summary); refs.playBtn.focus(); },
+    onToast: (m, k) => ui.toast(m, k),
+    onAnnounce: (m) => ui.announce(m),
+    onDuration: (sv, dur) => {
+      if (!sv) return;
+      store.setDuration(sv, dur);
+      ui.renderCard(sv.name);
+    },
+  });
+
+  ui.init(refs, { onPlay: startPlayback, onReload: loadLibrary });
+  ui._syncOptionInputs();
+
+  store.on('storage-error', () =>
+    ui.toast('Storage problem — changes may not be saved. Export to back up.', 'warn'));
+
+  // Another tab edited the same config: warn rather than silently clobber.
+  window.addEventListener('storage', (e) => {
+    if (e.key === 'showreel.config.v1' && e.newValue) {
+      ui.toast('Config changed in another tab — reload to load those changes.', 'warn');
+    }
+  });
+
+  loadLibrary();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
