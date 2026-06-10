@@ -1,4 +1,4 @@
-# Showreel
+# Showreel (for UIST 2026 PC Meeting)
 
 A small, **purely-web** showreel / digital-signage tool. Browse the clips in
 a folder, trim each one and give it a title, choose how the playlist should run,
@@ -11,6 +11,10 @@ Safari in particular refuses to play a video that isn't served with `206 Partial
 Content`).
 
 ## Run it
+
+You only need [Node.js](https://nodejs.org) (any recent version). There are **no
+packages to install** — the server has zero dependencies, so skip `npm install`
+and just run:
 
 ```bash
 node server.js            # then open http://127.0.0.1:5173
