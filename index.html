@@ -22,6 +22,10 @@
       </div>
 
       <div class="appbar__actions">
+        <span id="savedIndicator" class="saved-indicator" role="status" aria-live="polite" hidden>
+          <span class="saved-indicator__check" aria-hidden="true">✓</span>
+          <span class="saved-indicator__text">Saved</span>
+        </span>
         <span id="sessionSummary" class="appbar__summary" aria-live="polite"></span>
         <button id="playBtn" class="btn btn--primary" type="button" disabled
                 aria-describedby="playBlockers">
@@ -70,9 +74,11 @@
               <span id="titleError" class="inline-error" role="alert" hidden>A title is required.</span>
             </label>
 
-            <!-- Dual-handle trim (two native range inputs => keyboard + AT operable) -->
-            <div class="trim" role="group" aria-label="Trim start and end">
+            <!-- Dual-handle trim (two native range inputs => keyboard + AT operable).
+                 Edits the currently-selected segment; other segments show as faint bands. -->
+            <div class="trim" role="group" aria-label="Trim the selected segment">
               <div class="trim__track">
+                <div id="trimBands" class="trim__bands" aria-hidden="true"></div>
                 <div id="trimFill" class="trim__fill"></div>
                 <div id="trimPlayhead" class="trim__playhead" hidden></div>
                 <input id="rangeIn" class="trim__range trim__range--in" type="range"
@@ -81,6 +87,8 @@
                        min="0" max="100" step="0.01" value="100" aria-label="End point (out)" />
               </div>
             </div>
+
+            <p id="segEditHint" class="seg-edit-hint muted" hidden></p>
 
             <div class="editor__times">
               <label class="field field--inline">
@@ -100,10 +108,21 @@
             </div>
             <span id="inOutError" class="inline-error" role="alert" hidden></span>
 
+            <!-- Multiple start/end points. The list is shown only once a clip has
+                 more than one segment; otherwise just "+ Add segment" appears. -->
+            <div id="segmentsBlock" class="segments">
+              <div class="segments__head">
+                <span class="field__label">Segments</span>
+                <button id="addSegBtn" class="btn btn--ghost btn--sm" type="button"
+                        aria-label="Add another start / end segment">+ Add segment</button>
+              </div>
+              <ul id="segmentList" class="seg-list" aria-label="Segments" hidden></ul>
+            </div>
+
             <div class="editor__readout">
               <span>Plays <strong id="trimmedDuration">—</strong></span>
               <span class="muted">of <span id="fullDuration">—</span> total</span>
-              <button id="playTrimmedBtn" class="btn btn--ghost btn--sm" type="button">▶ Preview trim</button>
+              <button id="playTrimmedBtn" class="btn btn--ghost btn--sm" type="button">▶ Preview segment</button>
             </div>
 
             <label class="field field--check">
@@ -158,12 +177,18 @@
         </div>
 
         <fieldset class="optgroup">
-          <legend>Config</legend>
+          <legend>Saving &amp; backup</legend>
+          <p class="save-note" role="status">
+            <span class="save-note__dot" aria-hidden="true">✓</span>
+            <span>Your changes save automatically in this browser — you don't need to export.</span>
+          </p>
           <div class="btn-row">
-            <button id="exportBtn" class="btn btn--ghost btn--sm" type="button">⤓ Export JSON</button>
-            <button id="importBtn" class="btn btn--ghost btn--sm" type="button">⤒ Import JSON</button>
+            <button id="previewConfigBtn" class="btn btn--ghost btn--sm" type="button">👁 Preview saved config</button>
+            <button id="exportBtn" class="btn btn--ghost btn--sm" type="button">⤓ Export backup</button>
+            <button id="importBtn" class="btn btn--ghost btn--sm" type="button">⤒ Import</button>
             <input id="importInput" type="file" accept="application/json,.json" hidden />
           </div>
+          <p class="hint muted">Export only to back up your setup or move it to another computer — it isn't needed to save.</p>
         </fieldset>
       </aside>
     </main>

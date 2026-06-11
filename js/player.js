@@ -77,6 +77,8 @@ class Player {
     this._preload = null;
     this._inP = 0;
     this._outP = null;
+    this._segs = [];   // resolved [{inP, outP}] for the active clip
+    this._segIdx = 0;  // which segment of the active clip is playing
     this.activeIdx = 0;
     this.videos[0].classList.add('is-active');
     this.videos[1].classList.remove('is-active');
@@ -196,18 +198,45 @@ class Player {
   }
 
   // ===================== preparing media =====================
-  _trimIn(clip, dur) {
-    return clamp(clip.in || 0, 0, dur != null ? Math.max(0, dur - MIN_CLIP) : (clip.in || 0));
+  // _trimIn/_trimOut resolve ONE segment ({ in, out, outIsEnd }) against the
+  // file duration, exactly as the single-trim case did before.
+  _trimIn(seg, dur) {
+    return clamp(seg.in || 0, 0, dur != null ? Math.max(0, dur - MIN_CLIP) : (seg.in || 0));
   }
 
-  _trimOut(clip, dur) {
-    if (clip.outIsEnd) return dur != null ? dur : null;
-    let o = clip.out;
+  _trimOut(seg, dur) {
+    if (seg.outIsEnd) return dur != null ? dur : null;
+    let o = seg.out;
     if (!Number.isFinite(o)) return dur != null ? dur : null;
     if (dur != null) o = clamp(o, 0, dur);
-    const inP = this._trimIn(clip, dur);
+    const inP = this._trimIn(seg, dur);
     if (o <= inP) return dur != null ? dur : null;
     return o;
+  }
+
+  /**
+   * Resolve a clip's ordered segment list to playable [{inP, outP}] pairs.
+   * Drops zero-length segments and any non-final segment that can't be cut
+   * (no resolvable OUT); a single-segment clip collapses to the old behaviour.
+   * Always returns at least one segment.
+   */
+  _segments(clip, dur) {
+    const list = (clip.segments && clip.segments.length) ? clip.segments : [{ in: 0, out: 0, outIsEnd: true }];
+    const out = [];
+    for (let k = 0; k < list.length; k++) {
+      const seg = list[k];
+      const isLast = k === list.length - 1;
+      const inP = this._trimIn(seg, dur);
+      const outP = this._trimOut(seg, dur);
+      if (!isLast && outP == null) continue;                 // can't cut -> would never advance
+      if (dur != null && outP != null && outP - inP < MIN_CLIP) continue; // zero-length
+      out.push({ inP, outP });
+    }
+    if (!out.length) {
+      const seg = list[0];
+      out.push({ inP: this._trimIn(seg, dur), outP: this._trimOut(seg, dur) });
+    }
+    return out;
   }
 
   _seekTo(v, t) {
@@ -271,7 +300,7 @@ class Player {
           if (stale()) return;
           if (!this.running) return fail('stopped');
           const dur = Number.isFinite(v.duration) ? v.duration : null;
-          const inP = this._trimIn(entry.clip, dur);
+          const inP = this._segments(entry.clip, dur)[0].inP;
           await this._seekTo(v, inP);
           if (stale()) return;
           // Force-decode the first frame so the swap shows a real frame.
@@ -312,6 +341,33 @@ class Player {
     this.transitionInProgress = true;
     this._clearWatchers();
     this._goNext().catch((err) => { console.error(err); this.finish('error'); });
+  }
+
+  /**
+   * Reached the OUT of the current segment. If the active clip has more
+   * segments, seek to the next on the SAME element (a brief in-place hitch, no
+   * buffer swap); otherwise hand off to advance() for the gap-free clip swap.
+   * _clearWatchers() bumps activeToken so the stale watcher that triggered this
+   * can't fire again — making this idempotent per segment, like advance().
+   */
+  _segmentDone(reason) {
+    if (!this.running || this.transitionInProgress) return;
+    if (this._segs && this._segIdx < this._segs.length - 1) {
+      this._clearWatchers();
+      this._segIdx++;
+      const seg = this._segs[this._segIdx];
+      this._inP = seg.inP;
+      this._outP = seg.outP;
+      this._updateProgress();
+      const v = this.videos[this.activeIdx];
+      this._seekTo(v, seg.inP).then(() => {
+        if (!this.running) return;
+        if (v.paused) this._playActive(v);
+        this._armWatchers(v, this._activeClip, seg.inP, seg.outP);
+      });
+      return;
+    }
+    this.advance(reason); // last segment -> next clip
   }
 
   async _goNext() {
@@ -357,8 +413,11 @@ class Player {
     const entry = this.base[baseIdx];
     const clip = entry.clip;
     const dur = Number.isFinite(v.duration) ? v.duration : null;
-    const inP = this._trimIn(clip, dur);
-    const outP = this._trimOut(clip, dur);
+    this._segs = this._segments(clip, dur);
+    this._segIdx = 0;
+    const seg0 = this._segs[0];
+    const inP = seg0.inP;
+    const outP = seg0.outP;
     this._inP = inP;
     this._outP = outP;
     this._activeClip = clip;
@@ -400,7 +459,7 @@ class Player {
     this.activeToken++;
     const tok = this.activeToken;
 
-    const onEnded = () => { if (tok !== this.activeToken || !this.running) return; this.advance('ended'); };
+    const onEnded = () => { if (tok !== this.activeToken || !this.running) return; this._segmentDone('ended'); };
     v.addEventListener('ended', onEnded, { once: true });
     this._onEnded = { v, fn: onEnded };
 
@@ -410,7 +469,7 @@ class Player {
       const tick = (now, meta) => {
         if (tok !== this.activeToken || !this.running) return;
         const t = meta ? meta.mediaTime : v.currentTime;
-        if (outP != null && t >= outP - EPS) { this.advance('out'); return; }
+        if (outP != null && t >= outP - EPS) { this._segmentDone('out'); return; }
         this._rvfcHandle = v.requestVideoFrameCallback(tick);
         this._rvfcVideo = v;
       };
@@ -420,7 +479,7 @@ class Player {
       const onTU = () => {
         if (tok !== this.activeToken || !this.running) return;
         const t = v.currentTime;
-        if (outP != null && t >= outP - EPS) this.advance('out');
+        if (outP != null && t >= outP - EPS) this._segmentDone('out');
       };
       v.addEventListener('timeupdate', onTU);
       this._onTU = { v, fn: onTU };
@@ -433,7 +492,7 @@ class Player {
     if (outP == null) return;
     const remaining = (outP - v.currentTime) / (v.playbackRate || 1);
     if (remaining <= 0) return; // rVFC will catch it
-    this._outTimer = setTimeout(() => { if (this.running) this.advance('timeout'); }, remaining * 1000 + 120);
+    this._outTimer = setTimeout(() => { if (this.running) this._segmentDone('timeout'); }, remaining * 1000 + 120);
   }
 
   _clearWatchers() {
@@ -454,7 +513,8 @@ class Player {
     const inCycle = (this.pos % n) + 1;
     const cycle = Math.floor(this.pos / n) + 1;
     const cycleLabel = this.isLoop ? ` · cycle ${cycle}` : '';
-    this.progressEl.textContent = `${inCycle} / ${n}${cycleLabel}`;
+    const segLabel = (this._segs && this._segs.length > 1) ? ` · seg ${this._segIdx + 1}/${this._segs.length}` : '';
+    this.progressEl.textContent = `${inCycle} / ${n}${cycleLabel}${segLabel}`;
   }
 
   _recordFailure(baseIdx, e) {
@@ -557,6 +617,12 @@ class Player {
   _restartCurrent() {
     const v = this.videos[this.activeIdx];
     this._clearWatchers();            // cancel the stale rVFC/out/ended for this clip
+    // Restart the WHOLE clip from its first segment, not the current one.
+    this._segIdx = 0;
+    const seg0 = (this._segs && this._segs[0]) || { inP: this._inP, outP: this._outP };
+    this._inP = seg0.inP;
+    this._outP = seg0.outP;
+    this._updateProgress();
     this._seekTo(v, this._inP);
     if (this.overlayEnabled) { this.titleEl.textContent = this._activeClip ? (this._activeClip.title || '') : ''; this.titleEl.classList.add('is-visible'); }
     if (v.paused) v.play().catch(() => {});

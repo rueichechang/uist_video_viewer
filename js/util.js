@@ -100,6 +100,17 @@ export function titleFromName(name) {
   return cleaned.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+/**
+ * The short clip ID for the library: the four digits after "sub" in a download
+ * filename (e.g. "abc_sub0421_final.mp4" -> "0421"). Downloads share a long
+ * common prefix, so this is the only distinguishing part. Falls back to the
+ * full filename when there's no "sub####" to extract.
+ */
+export function idFromName(name) {
+  const m = /sub(\d{4})/i.exec(name);
+  return m ? m[1] : name;
+}
+
 /** Encode a relative path for use as a URL, preserving "/" separators. */
 export function encodePath(p) {
   return p.split('/').map(encodeURIComponent).join('/');

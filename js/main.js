@@ -3,6 +3,7 @@
 import { store } from './store.js';
 import { player } from './player.js';
 import { ui } from './ui.js';
+import { idFromName } from './util.js';
 
 const byId = (id) => document.getElementById(id);
 
@@ -10,6 +11,7 @@ const refs = {
   // shell / appbar
   shell: byId('shell'),
   playBtn: byId('playBtn'),
+  savedIndicator: byId('savedIndicator'),
   sessionSummary: byId('sessionSummary'),
   reloadBtn: byId('reloadBtn'),
 
@@ -26,12 +28,17 @@ const refs = {
   rangeIn: byId('rangeIn'),
   rangeOut: byId('rangeOut'),
   trimFill: byId('trimFill'),
+  trimBands: byId('trimBands'),
   trimPlayhead: byId('trimPlayhead'),
   inInput: byId('inInput'),
   outInput: byId('outInput'),
   inOutError: byId('inOutError'),
   setInBtn: byId('setInBtn'),
   setOutBtn: byId('setOutBtn'),
+  segEditHint: byId('segEditHint'),
+  segmentsBlock: byId('segmentsBlock'),
+  segmentList: byId('segmentList'),
+  addSegBtn: byId('addSegBtn'),
   trimmedDuration: byId('trimmedDuration'),
   fullDuration: byId('fullDuration'),
   playTrimmedBtn: byId('playTrimmedBtn'),
@@ -44,6 +51,7 @@ const refs = {
   overlayEnabled: byId('overlayEnabled'),
   startMuted: byId('startMuted'),
   playBlockers: byId('playBlockers'),
+  previewConfigBtn: byId('previewConfigBtn'),
   exportBtn: byId('exportBtn'),
   importBtn: byId('importBtn'),
   importInput: byId('importInput'),
@@ -77,6 +85,12 @@ async function loadLibrary() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     videos = Array.isArray(data.videos) ? data.videos : [];
+    // Order the library by the 4-digit clip ID so the cards (which show the ID)
+    // read in numeric order; playback follows this order. Files without an ID
+    // fall back to filename order, matching the server's default sort.
+    videos.sort((a, b) =>
+      idFromName(a.name).localeCompare(idFromName(b.name), undefined, { numeric: true, sensitivity: 'base' })
+    );
   } catch (err) {
     ui.toast('Could not reach the server. Run "node server.js" and reload.', 'bad');
   }
@@ -112,6 +126,15 @@ function init() {
 
   store.on('storage-error', () =>
     ui.toast('Storage problem — changes may not be saved. Export to back up.', 'warn'));
+
+  // Config is autosaved after every edit, but on a 300ms debounce. Force any
+  // pending write out when the tab is hidden or closing so the last edit (e.g.
+  // a quick segment tweak right before navigating away) is never lost.
+  const flushNow = () => store.flush();
+  window.addEventListener('pagehide', flushNow);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') store.flush();
+  });
 
   // Another tab edited the same config: warn rather than silently clobber.
   window.addEventListener('storage', (e) => {

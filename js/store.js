@@ -2,6 +2,9 @@
 //
 // The persisted document is the single source of truth for authoring data:
 //   { schemaVersion, options, clips: { [filename]: ClipEntry } }
+// Each ClipEntry carries an ordered list of trim `segments` ({ in, out,
+// outIsEnd }); the clip plays each segment in turn before advancing. A single
+// whole-clip trim is just a one-element list, so the common case is unchanged.
 // Clips are keyed by filename (the only stable identity a static file server
 // offers); entries for files that vanish are MARKED missing, never deleted.
 
@@ -12,7 +15,9 @@ const BAK_KEY = 'showreel.config.v1.bak';
 const DUR_KEY = 'showreel.durations.v1';
 // Previous key names (app was called "marquee"); migrated on first load.
 const LEGACY = { config: 'marquee.config.v1', bak: 'marquee.config.v1.bak', dur: 'marquee.durations.v1' };
-const SCHEMA_VERSION = 1;
+// v1 stored a single flat trim (in/out/outIsEnd) per clip; v2 stores a
+// `segments` array. normalizeDoc() migrates v1 docs transparently on load.
+const SCHEMA_VERSION = 2;
 
 const DEFAULT_OPTIONS = {
   mode: 'sequential-loop',
@@ -24,12 +29,52 @@ function nowISO() {
   return new Date().toISOString();
 }
 
+/** The canonical "whole clip" segment: play from 0 to the end of the file. */
+function defaultSegment() {
+  return { in: 0, out: 0, outIsEnd: true }; // outIsEnd: play to the end until a specific OUT is pinned
+}
+
+/** Coerce one arbitrary object into a valid segment. `defaultEnd` is the
+ *  outIsEnd value used when the field is absent (true for v1 migration, where
+ *  a missing OUT meant "play to end"; false for explicit v2 arrays). */
+function coerceSeg(s, defaultEnd) {
+  return {
+    in: Number.isFinite(s.in) ? Math.max(0, round3(s.in)) : 0,
+    out: Number.isFinite(s.out) ? Math.max(0, round3(s.out)) : 0,
+    outIsEnd: typeof s.outIsEnd === 'boolean' ? s.outIsEnd : defaultEnd,
+  };
+}
+
+/** Only the LAST segment may "play to the end"; clear it on the others. */
+function enforceLastOutIsEnd(segs) {
+  return segs.map((s, i) => (i < segs.length - 1 && s.outIsEnd) ? { ...s, outIsEnd: false } : s);
+}
+
+/** Resolve a clip's segment list, migrating a v1 flat trim if needed. The
+ *  duration (if known) is used to heal a collapsed range left by older builds —
+ *  a non-"to end" segment whose OUT fell to <= IN, which would otherwise
+ *  silently invalidate the whole clip and drop it from the showreel. */
+function normalizeSegments(c, dur) {
+  let segs;
+  if (Array.isArray(c.segments)) {
+    const arr = c.segments.filter((s) => s && typeof s === 'object').map((s) => coerceSeg(s, false));
+    segs = arr.length ? enforceLastOutIsEnd(arr) : [defaultSegment()];
+  } else if ('in' in c || 'out' in c || 'outIsEnd' in c) {
+    // v1 migration: synthesize a single segment from the old flat in/out/outIsEnd.
+    segs = [coerceSeg(c, true)];
+  } else {
+    segs = [defaultSegment()];
+  }
+  if (dur != null) {
+    segs = segs.map((s) => (!s.outIsEnd && s.out <= s.in) ? { ...s, out: round3(dur) } : s);
+  }
+  return segs;
+}
+
 function defaultClip(name, fileSig, order) {
   return {
     title: titleFromName(name),
-    in: 0,
-    out: 0,
-    outIsEnd: true, // play to the end until the user pins a specific OUT
+    segments: [defaultSegment()],
     duration: null,
     enabled: true,
     order,
@@ -62,9 +107,7 @@ function normalizeDoc(raw) {
     const dur = Number.isFinite(c.duration) ? c.duration : null;
     doc.clips[name] = {
       title: typeof c.title === 'string' ? c.title.slice(0, 120) : titleFromName(name),
-      in: Number.isFinite(c.in) ? Math.max(0, round3(c.in)) : 0,
-      out: Number.isFinite(c.out) ? Math.max(0, round3(c.out)) : 0,
-      outIsEnd: c.outIsEnd !== false, // default true
+      segments: normalizeSegments(c, dur),
       duration: dur,
       enabled: c.enabled !== false,
       order: Number.isFinite(c.order) ? c.order : (order += 10),
@@ -163,45 +206,44 @@ class Store extends EventTarget {
     this.emit('clip-changed', { name, removed: true });
   }
 
-  _nextOrder() {
-    const orders = Object.values(this.doc.clips).map((c) => c.order).filter(Number.isFinite);
-    return (orders.length ? Math.max(...orders) : 0) + 10;
-  }
-
   /**
    * Reconcile the persisted clips against the live folder listing:
    *  - new file        -> create a default entry
    *  - present file    -> clear `missing`; if its size/mtime changed, force a
    *                       duration re-read by clearing the cached duration
    *  - vanished file   -> mark `missing` (keep the authoring data)
+   * Playback `order` is re-derived from each clip's position in `library`, so
+   * the showreel always plays in the same order the library displays (there is
+   * no separate user clip-reordering, so insertion order must not drift).
    */
   reconcile(library) {
     this.library = library;
     const present = new Set(library.map((v) => v.name));
 
-    for (const v of library) {
+    library.forEach((v, i) => {
       const sig = { size: v.size, mtimeMs: v.mtimeMs };
       let clip = this.doc.clips[v.name];
       if (!clip) {
-        clip = defaultClip(v.name, sig, this._nextOrder());
+        clip = defaultClip(v.name, sig, i * 10);
         // adopt a cached duration if we have one for this exact file signature
         const cached = this.getCachedDuration(v);
         if (cached != null) clip.duration = cached;
         this.doc.clips[v.name] = clip;
-        continue;
+      } else {
+        clip.missing = false;
+        const old = clip.fileSig;
+        const changedOnDisk = !old || !Number.isFinite(old.mtimeMs) || old.size !== sig.size || old.mtimeMs !== sig.mtimeMs;
+        if (changedOnDisk) {
+          clip.fileSig = sig;
+          clip.changed = !!old; // only flag as "changed" if it existed before
+          clip.duration = this.getCachedDuration(v); // null unless cached for new sig
+        } else if (clip.duration == null) {
+          const cached = this.getCachedDuration(v);
+          if (cached != null) clip.duration = cached;
+        }
       }
-      clip.missing = false;
-      const old = clip.fileSig;
-      const changedOnDisk = !old || !Number.isFinite(old.mtimeMs) || old.size !== sig.size || old.mtimeMs !== sig.mtimeMs;
-      if (changedOnDisk) {
-        clip.fileSig = sig;
-        clip.changed = !!old; // only flag as "changed" if it existed before
-        clip.duration = this.getCachedDuration(v); // null unless cached for new sig
-      } else if (clip.duration == null) {
-        const cached = this.getCachedDuration(v);
-        if (cached != null) clip.duration = cached;
-      }
-    }
+      clip.order = i * 10; // keep playback order aligned with the library order
+    });
 
     for (const [name, clip] of Object.entries(this.doc.clips)) {
       if (!present.has(name)) clip.missing = true;
@@ -228,30 +270,43 @@ class Store extends EventTarget {
     if (clip) {
       clip.duration = dur;
       clip.changed = false;
-      // Snap to the now-known length and keep IN/OUT within [0, dur] in BOTH
-      // the outIsEnd and explicit-out cases (preserves the data invariant).
-      clip.out = clip.outIsEnd ? dur : clamp(clip.out || 0, 0, dur);
-      clip.in = clamp(clip.in || 0, 0, Math.max(0, dur));
+      // Snap every segment to the now-known length, keeping IN/OUT within
+      // [0, dur] in BOTH the outIsEnd and explicit-out cases.
+      for (const seg of clip.segments) {
+        seg.in = clamp(seg.in || 0, 0, Math.max(0, dur));
+        seg.out = seg.outIsEnd ? dur : clamp(seg.out || 0, 0, dur);
+        if (!seg.outIsEnd && seg.out <= seg.in) seg.out = dur; // heal a collapsed range
+      }
       this.persist();
     }
     this.emit('duration', { name: v.name, duration: dur });
   }
 
   // ---- validity --------------------------------------------------------
-  /** Effective IN/OUT in seconds, clamped to the known duration. */
-  effectiveTrim(clip) {
+  /**
+   * Resolve a clip's segments to effective { in, out } pairs in seconds,
+   * clamped to the known duration. `out` is null when it can't be known yet
+   * (a "play to end" segment before the browser has reported the duration).
+   */
+  effectiveSegments(clip) {
     const dur = clip.duration;
-    const inP = clamp(clip.in || 0, 0, dur != null ? dur : Number.MAX_VALUE);
-    let outP = clip.outIsEnd ? dur : (Number.isFinite(clip.out) ? clip.out : null);
-    if (dur != null) outP = clamp(outP != null ? outP : dur, 0, dur);
-    return { in: inP, out: outP, duration: dur };
+    const segs = (clip.segments && clip.segments.length) ? clip.segments : [defaultSegment()];
+    return segs.map((s) => {
+      const inP = clamp(s.in || 0, 0, dur != null ? dur : Number.MAX_VALUE);
+      let outP = s.outIsEnd ? dur : (Number.isFinite(s.out) ? s.out : null);
+      if (dur != null) outP = clamp(outP != null ? outP : dur, 0, dur);
+      return { in: inP, out: outP };
+    });
   }
 
-  /** Trimmed (played) length, or null if unknowable yet. */
+  /** Total trimmed (played) length across all segments, or null if unknowable. */
   trimmedLength(clip) {
-    const { in: i, out: o } = this.effectiveTrim(clip);
-    if (o == null) return null;
-    return Math.max(0, o - i);
+    let total = 0;
+    for (const { in: i, out: o } of this.effectiveSegments(clip)) {
+      if (o == null) return null;
+      total += Math.max(0, o - i);
+    }
+    return total;
   }
 
   clipValidity(clip, serverEntry) {
@@ -259,10 +314,17 @@ class Store extends EventTarget {
     if (clip.missing) reasons.push('file missing');
     if (!clip.title || !clip.title.trim()) reasons.push('needs title');
     if (serverEntry && serverEntry.unplayable) reasons.push('unsupported format');
-    const { in: i, out: o } = this.effectiveTrim(clip);
-    if (i < 0) reasons.push('start before 0');
-    if (o != null && !(o - i >= MIN_CLIP)) reasons.push('end too close to start');
-    if (clip.duration != null && i >= clip.duration) reasons.push('start past end of file');
+    const segs = this.effectiveSegments(clip);
+    // Validate every segment; dedupe reasons so a clip with many bad segments
+    // still reads cleanly (and the blocker tally stays meaningful).
+    const segReasons = new Set();
+    if (!segs.length) segReasons.add('no segments');
+    for (const { in: i, out: o } of segs) {
+      if (i < 0) segReasons.add('start before 0');
+      if (o != null && !(o - i >= MIN_CLIP)) segReasons.add('end too close to start');
+      if (clip.duration != null && i >= clip.duration) segReasons.add('start past end of file');
+    }
+    reasons.push(...segReasons);
     return { valid: reasons.length === 0, reasons };
   }
 

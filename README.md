@@ -35,7 +35,9 @@ so you can drop new clips in at any time.
    excluded, are missing, or use an unsupported format.
 2. **Authoring** (centre) — for the selected clip: a **Title** (required), and an
    **in / out trim** you set with the dual-handle slider, by typing seconds
-   (`12.5` or `1:23.4`), or with **Set** to grab the preview's current frame.
+   (`12.5` or `1:23.4`), or with **Set** to grab the preview's current frame. Use
+   **+ Add segment** to give one clip several start/end ranges — they play in
+   order, back-to-back, before the showreel advances to the next clip.
 3. **Options** (right) — playback mode, a toggle for the title headline,
    start-muted, and JSON **Export / Import** of your whole configuration.
 4. **▶ Play fullscreen** (top right) — runs the showreel.
@@ -59,10 +61,11 @@ as a headline at the top for the whole of *every* clip, including loop repeats.
 
 ## Notes & limits
 
-- **Where data lives:** titles, trims and options are saved in your browser's
-  `localStorage` (with a `.bak` copy). Use **Export** to move a setup between
-  machines or back it up. Authoring data for a file that disappears is *kept* and
-  flagged "Missing", not deleted.
+- **Where data lives:** titles, trims (one or more start/end segments per clip)
+  and options are saved in your browser's `localStorage` (with a `.bak` copy),
+  written after every edit and flushed when the tab closes. Use **Export** to
+  move a setup between machines or back it up. Authoring data for a file that
+  disappears is *kept* and flagged "Missing", not deleted.
 - **Durations & thumbnails** come from the browser (there's no `ffmpeg`), so the
   library shows "Loading metadata…" briefly on first scan, then caches the result.
 - **Trimming is to the nearest decodable frame** (no re-encoding), so the start
