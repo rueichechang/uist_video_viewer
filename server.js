@@ -48,6 +48,9 @@ const VIDEO_TYPES = {
   '.ogg': 'video/ogg',
 };
 
+// Sidecar caption files, matched to a video by filename stem (see captionStem).
+const CAPTION_TYPES = new Set(['.srt', '.vtt', '.txt']);
+
 const STATIC_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -61,7 +64,25 @@ const STATIC_TYPES = {
   '.ico': 'image/x-icon',
   '.map': 'application/json; charset=utf-8',
   '.webmanifest': 'application/manifest+json',
+  '.vtt': 'text/vtt; charset=utf-8',
+  '.srt': 'text/plain; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
 };
+
+/**
+ * Reduce a filename to the stem shared between a clip and its caption sidecar:
+ * drop the extension, then the trailing instance tag (e.g. "-i8", "-i42") so
+ * "uist26a-sub3869-i8.mov" and "uist26a-sub3869-i42.txt" both map to
+ * "uist26a-sub3869".
+ */
+function captionStem(name) {
+  return name.replace(/\.[^.]+$/, '').replace(/-i\d+$/i, '');
+}
+
+/** Percent-encode a relative path, keeping "/" separators intact. */
+function encodePath(rel) {
+  return rel.split('/').map(encodeURIComponent).join('/');
+}
 
 function contentType(filePath) {
   const ext = path.extname(filePath).toLowerCase();
@@ -116,22 +137,56 @@ function safeResolve(urlPath) {
   return real;
 }
 
-function listVideos() {
+/**
+ * Recursively collect files under `dir`, recording each one's path relative to
+ * VIDEO_DIR (POSIX separators) and the relative directory it lives in. Dotfiles
+ * and dot-directories (.DS_Store, ._AppleDouble, .git, …) are skipped so they
+ * never pass the extension test as phantom entries.
+ */
+function walkFiles(dir, relBase, out) {
   let entries;
   try {
-    entries = fs.readdirSync(VIDEO_DIR, { withFileTypes: true });
+    entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch (err) {
-    if (err.code === 'ENOENT') return [];
+    if (err.code === 'ENOENT') return;
     throw err;
   }
-  return entries
-    .filter((e) => e.isFile())
-    // Skip dotfiles, incl. macOS .DS_Store and ._AppleDouble files (the latter
-    // would otherwise pass the extension test as a phantom 0-byte "video").
-    .filter((e) => !e.name.startsWith('.'))
-    .filter((e) => VIDEO_TYPES[path.extname(e.name).toLowerCase()])
-    .map((e) => {
-      const full = path.join(VIDEO_DIR, e.name);
+  for (const e of entries) {
+    if (e.name.startsWith('.')) continue;
+    const rel = relBase ? `${relBase}/${e.name}` : e.name;
+    if (e.isDirectory()) {
+      walkFiles(path.join(dir, e.name), rel, out);
+    } else if (e.isFile()) {
+      out.push({ name: e.name, rel, dir: relBase });
+    }
+  }
+}
+
+/**
+ * List every playable video anywhere under videos/ (including category
+ * subfolders like videos/auto-accept/). Each entry's `name` is its path
+ * relative to videos/ — the stable identity the client keys clips by — and
+ * `category` is its top-level subfolder ('' for files sitting directly in
+ * videos/). A caption sidecar is matched only within the SAME folder.
+ */
+function listVideos() {
+  const all = [];
+  walkFiles(VIDEO_DIR, '', all);
+
+  // Index caption sidecars by (folder, stem) so a video only claims a caption
+  // that sits beside it, never one with the same stem in a different folder.
+  const captions = new Map();
+  for (const f of all) {
+    if (CAPTION_TYPES.has(path.extname(f.name).toLowerCase())) {
+      const key = `${f.dir}\0${captionStem(f.name)}`;
+      if (!captions.has(key)) captions.set(key, f.rel);
+    }
+  }
+
+  return all
+    .filter((f) => VIDEO_TYPES[path.extname(f.name).toLowerCase()])
+    .map((f) => {
+      const full = path.join(VIDEO_DIR, f.rel);
       let size = 0;
       let mtimeMs = 0;
       try {
@@ -141,12 +196,15 @@ function listVideos() {
       } catch (_) {
         /* ignore unreadable entries */
       }
+      const caption = captions.get(`${f.dir}\0${captionStem(f.name)}`) || null;
       return {
-        name: e.name,
-        url: '/videos/' + encodeURIComponent(e.name),
-        type: VIDEO_TYPES[path.extname(e.name).toLowerCase()],
+        name: f.rel,
+        url: '/videos/' + encodePath(f.rel),
+        type: VIDEO_TYPES[path.extname(f.name).toLowerCase()],
         size,
         mtimeMs,
+        category: f.dir ? f.dir.split('/')[0] : '',
+        captionUrl: caption ? '/videos/' + encodePath(caption) : null,
       };
     })
     .sort((a, b) =>
@@ -286,7 +344,8 @@ if (require.main === module) {
     console.log(`\n  Showreel running:  http://${HOST}:${PORT}\n`);
     console.log(`  Serving app from:       ${ROOT}`);
     console.log(`  Looking for videos in:  ${VIDEO_DIR}`);
-    console.log(`\n  Drop .mp4/.mov/.webm files into ./videos and reload.\n`);
+    console.log(`\n  Drop .mp4/.mov/.webm files (and optional .srt/.vtt/.txt captions)`);
+    console.log(`  into ./videos or any subfolder, then reload.\n`);
   });
 }
 

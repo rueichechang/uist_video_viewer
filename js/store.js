@@ -8,7 +8,7 @@
 // Clips are keyed by filename (the only stable identity a static file server
 // offers); entries for files that vanish are MARKED missing, never deleted.
 
-import { MIN_CLIP, clamp, debounce, round3, titleFromName } from './util.js';
+import { MIN_CLIP, clamp, debounce, round3, titleFromName, baseName } from './util.js';
 
 const CONFIG_KEY = 'showreel.config.v1';
 const BAK_KEY = 'showreel.config.v1.bak';
@@ -206,6 +206,50 @@ class Store extends EventTarget {
     this.emit('clip-changed', { name, removed: true });
   }
 
+  /** A clip that carries no user authoring — exactly what defaultClip() makes
+   *  (auto title, one whole-file segment, enabled). Such an entry is safe to
+   *  overwrite when folding a moved clip onto it. */
+  _isPristineDefault(clip, name) {
+    if (!clip || clip.enabled === false) return false;
+    if (clip.title !== titleFromName(name)) return false;
+    const segs = clip.segments || [];
+    return segs.length === 1 && (segs[0].in || 0) === 0 && segs[0].outIsEnd === true;
+  }
+
+  /**
+   * Fold persisted clips whose file moved (so its identity path changed) onto
+   * the matching live file, so a move never leaves a stale "Missing" duplicate
+   * beside a fresh blank entry for the new path. For each orphaned entry, when
+   * exactly one live file shares its basename:
+   *   - no entry yet for that path, or a pristine auto-default -> adopt the
+   *     orphan's authoring (keeping the live file's resolved duration/signature);
+   *   - the path already has real authoring -> keep it.
+   * Either way the orphan (a stale alias of a file that still exists) is removed.
+   * Ambiguous basenames (same name in two folders) are left as Missing.
+   */
+  _migrateMovedClips(library, present) {
+    const presentByBase = new Map(); // basename -> [live paths]
+    for (const v of library) {
+      const b = baseName(v.name);
+      if (!presentByBase.has(b)) presentByBase.set(b, []);
+      presentByBase.get(b).push(v.name);
+    }
+    for (const oldName of Object.keys(this.doc.clips)) {
+      if (present.has(oldName)) continue; // file still there under this key
+      const paths = presentByBase.get(baseName(oldName));
+      if (!paths || paths.length !== 1) continue; // gone, or ambiguous -> keep Missing
+      const newName = paths[0];
+      const orphan = this.doc.clips[oldName];
+      const target = this.doc.clips[newName];
+      if (!target || this._isPristineDefault(target, newName)) {
+        const dur = target && target.duration != null ? target.duration : orphan.duration;
+        const sig = target && target.fileSig ? target.fileSig : orphan.fileSig;
+        this.doc.clips[newName] = { ...orphan, duration: dur, fileSig: sig };
+      }
+      delete this.doc.clips[oldName];
+    }
+  }
+
   /**
    * Reconcile the persisted clips against the live folder listing:
    *  - new file        -> create a default entry
@@ -219,6 +263,12 @@ class Store extends EventTarget {
   reconcile(library) {
     this.library = library;
     const present = new Set(library.map((v) => v.name));
+
+    // Heal identity changes (e.g. clips moved into a subfolder, so the key went
+    // from "x.mp4" to "auto-accept/x.mp4"): re-home an orphaned entry onto the
+    // live file that shares its basename, preserving its title/trims instead of
+    // stranding it as "Missing" while a blank default appears for the new path.
+    this._migrateMovedClips(library, present);
 
     library.forEach((v, i) => {
       const sig = { size: v.size, mtimeMs: v.mtimeMs };

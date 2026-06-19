@@ -22,9 +22,39 @@ node server.js            # then open http://127.0.0.1:5173
 npm start
 ```
 
+### Folder layout
 Put your video files in the [`videos/`](videos/) folder (`.mp4`, `.m4v`, `.mov`,
 `.webm`, `.ogv`), then click **⟳ Rescan** (or reload). Files are matched by name,
 so you can drop new clips in at any time.
+
+
+`videos/` is scanned **recursively**, so you can group clips into category
+subfolders and they all show up in one library:
+
+```
+videos/
+├── auto-accept/
+│   ├── uist26a-sub3869-i8.mov     ← clip
+│   ├── uist26a-sub3869-i42.txt    ← its captions
+│   └── …
+└── others/
+    └── …
+```
+
+A clip's identity is its path relative to `videos/` (e.g.
+`auto-accept/uist26a-sub3869-i8.mov`), so two files with the same name in
+different folders never collide. The library title/ID is derived from just the
+filename. Files placed directly in `videos/` still work (no subfolder needed).
+
+### Captions
+
+Drop a sidecar caption file (`.srt`, `.vtt`, or `.txt` in SRT/WebVTT/SBV format)
+**in the same folder** as a clip and it shows as subtitles during fullscreen
+playback. Captions are matched by filename stem ignoring the trailing instance
+tag — e.g. `uist26a-sub3869-i8.mov` pairs with `uist26a-sub3869-i42.txt` in the
+same folder. Clips without a caption file just play with none. Subtitles follow
+real media time, so they stay in sync even when a clip is trimmed into several
+reordered segments.
 
 > Want it reachable from another machine? `HOST=0.0.0.0 PORT=8080 node server.js`.
 
@@ -58,6 +88,21 @@ as a headline at the top for the whole of *every* clip, including loop repeats.
 
 `Esc` exit · `Space` pause/resume · `→` next clip · `←` restart clip ·
 `↑`/`↓` volume · `M` mute · `F` re-enter fullscreen.
+
+## Data the server returns
+
+`GET /api/videos` returns `{ "videos": [ … ] }`, one entry per playable file
+found anywhere under `videos/`:
+
+| Field | Example | Meaning |
+| --- | --- | --- |
+| `name` | `auto-accept/uist26a-sub3869-i8.mov` | Path relative to `videos/`; the clip's stable identity (config is keyed by it). |
+| `url` | `/videos/auto-accept/uist26a-sub3869-i8.mov` | Stream URL (each path segment percent-encoded), served with HTTP Range. |
+| `type` | `video/quicktime` | MIME type from the extension. |
+| `size` | `241529410` | Bytes. |
+| `mtimeMs` | `1781907477193` | Last-modified epoch ms (with `size`, used to cache durations). |
+| `category` | `auto-accept` | Top-level subfolder, or `""` for files directly in `videos/`. |
+| `captionUrl` | `/videos/auto-accept/uist26a-sub3869-i42.txt` | Matching caption sidecar in the same folder, or `null` if none. |
 
 ## Notes & limits
 

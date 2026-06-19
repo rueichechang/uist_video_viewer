@@ -15,7 +15,7 @@
 //   * fullscreenchange is the SOLE authority for "stopped" on Esc, so the app's
 //     own key handler never races the browser's auto-exit.
 
-import { MIN_CLIP, clamp, shuffle } from './util.js';
+import { MIN_CLIP, clamp, shuffle, parseCaptions, encodePath } from './util.js';
 
 const EPS = 0.02;          // ~half a frame at 30fps
 const PREP_TIMEOUT = 15000;
@@ -40,6 +40,7 @@ class Player {
     this.container = refs.container;
     this.videos = [refs.videoA, refs.videoB];
     this.titleEl = refs.titleOverlay;
+    this.captionEl = refs.captionOverlay;
     this.noticeEl = this.container.querySelector('#playerNotice');
     this.progressEl = refs.clipProgress;
     this.hintEl = refs.controlHint;
@@ -80,6 +81,11 @@ class Player {
     this._segs = [];   // resolved [{inP, outP}] for the active clip
     this._segIdx = 0;  // which segment of the active clip is playing
     this.activeIdx = 0;
+    this._captionCache = new Map(); // url -> Promise<cues[]>
+    this._captionCues = [];         // cues for the active clip (in file time)
+    this._captionUrl = null;        // url currently owning the overlay
+    this._captionText = null;       // last rendered cue text (dedupe)
+    this._renderCaption('');
     this.videos[0].classList.add('is-active');
     this.videos[1].classList.remove('is-active');
   }
@@ -145,6 +151,8 @@ class Player {
     this._setShellInert(false);
     this.titleEl.classList.remove('is-visible');
     if (this.noticeEl) this.noticeEl.classList.remove('is-visible');
+    this._captionUrl = null;
+    this._renderCaption('');
     clearTimeout(this._noticeTimer);
     this.container.hidden = true;
 
@@ -276,7 +284,7 @@ class Player {
   /** Load + duration-resolve + seek to IN + decode a frame; leaves paused at IN. */
   _prepare(v, baseIdx) {
     const entry = this.base[baseIdx];
-    const url = entry.server ? entry.server.url : '/videos/' + encodeURIComponent(entry.name);
+    const url = entry.server ? entry.server.url : '/videos/' + encodePath(entry.name);
     // Token so a superseded prepare on the SAME element (e.g. when skipping a
     // failed clip while a preload is still in flight) can't race the new one.
     const tok = (this._prepSeq = (this._prepSeq || 0) + 1);
@@ -421,6 +429,7 @@ class Player {
     this._inP = inP;
     this._outP = outP;
     this._activeClip = clip;
+    this._loadCaptions(entry);
 
     v.classList.add('is-active');
     old.classList.remove('is-active');
@@ -469,6 +478,7 @@ class Player {
       const tick = (now, meta) => {
         if (tok !== this.activeToken || !this.running) return;
         const t = meta ? meta.mediaTime : v.currentTime;
+        this._updateCaption(t);
         if (outP != null && t >= outP - EPS) { this._segmentDone('out'); return; }
         this._rvfcHandle = v.requestVideoFrameCallback(tick);
         this._rvfcVideo = v;
@@ -479,6 +489,7 @@ class Player {
       const onTU = () => {
         if (tok !== this.activeToken || !this.running) return;
         const t = v.currentTime;
+        this._updateCaption(t);
         if (outP != null && t >= outP - EPS) this._segmentDone('out');
       };
       v.addEventListener('timeupdate', onTU);
@@ -515,6 +526,68 @@ class Player {
     const cycleLabel = this.isLoop ? ` · cycle ${cycle}` : '';
     const segLabel = (this._segs && this._segs.length > 1) ? ` · seg ${this._segIdx + 1}/${this._segs.length}` : '';
     this.progressEl.textContent = `${inCycle} / ${n}${cycleLabel}${segLabel}`;
+  }
+
+  // ===================== captions =====================
+  /**
+   * Fetch + parse the active clip's sidecar caption file (cached per URL).
+   * Cues carry ORIGINAL-file timestamps; since playback seeks within that same
+   * file, matching cues against the raw currentTime makes trimmed/reordered
+   * segments fall out for free — portions we skip simply never get matched.
+   */
+  _loadCaptions(entry) {
+    this._captionCues = [];
+    this._captionText = null;
+    this._renderCaption('');
+    const url = entry && entry.server && entry.server.captionUrl;
+    this._captionUrl = url || null;
+    if (!url) return;
+    const apply = (cues) => { if (this._captionUrl === url) this._captionCues = cues || []; };
+    if (this._captionCache.has(url)) {
+      this._captionCache.get(url).then(apply);
+      return;
+    }
+    const promise = fetch(url, { cache: 'no-cache' })
+      .then((r) => (r.ok ? r.text() : ''))
+      .then((txt) => parseCaptions(txt))
+      .catch(() => []);
+    this._captionCache.set(url, promise);
+    promise.then(apply);
+  }
+
+  /** Show the cue covering media time `t` (or clear it between cues). */
+  _updateCaption(t) {
+    if (!this.captionEl) return;
+    const cues = this._captionCues;
+    let text = '';
+    if (cues && cues.length) {
+      for (let i = 0; i < cues.length; i++) {
+        const c = cues[i];
+        if (c.start > t) break;            // sorted: nothing later can match
+        if (t < c.end) { text = c.text; break; }
+      }
+    }
+    if (text !== this._captionText) {
+      this._captionText = text;
+      this._renderCaption(text);
+    }
+  }
+
+  _renderCaption(text) {
+    if (!this.captionEl) return;
+    if (text) {
+      // One styled "line box" per physical line so the background hugs the text.
+      this.captionEl.replaceChildren(...text.split('\n').map((line) => {
+        const span = document.createElement('span');
+        span.className = 'caption-overlay__line';
+        span.textContent = line;
+        return span;
+      }));
+      this.captionEl.classList.add('is-visible');
+    } else {
+      this.captionEl.classList.remove('is-visible');
+      this.captionEl.replaceChildren();
+    }
   }
 
   _recordFailure(baseIdx, e) {

@@ -15,3 +15,6 @@ videos/*.ogg
 
 # Local backups
 *.bak
+
+# Local video data
+videos/

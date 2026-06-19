@@ -92,9 +92,15 @@ export function round3(n) {
   return Math.round(n * 1000) / 1000;
 }
 
-/** Default title derived from a filename. */
+/** Last path segment of a relative name (clips are keyed by "folder/file"). */
+export function baseName(name) {
+  const i = name.lastIndexOf('/');
+  return i === -1 ? name : name.slice(i + 1);
+}
+
+/** Default title derived from a filename (folder prefix is ignored). */
 export function titleFromName(name) {
-  const base = name.replace(/\.[^.]+$/, '');
+  const base = baseName(name).replace(/\.[^.]+$/, '');
   const cleaned = base.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (!cleaned) return 'Untitled';
   return cleaned.replace(/\b\w/g, (c) => c.toUpperCase());
@@ -108,7 +114,7 @@ export function titleFromName(name) {
  */
 export function idFromName(name) {
   const m = /sub(\d{4})/i.exec(name);
-  return m ? m[1] : name;
+  return m ? m[1] : baseName(name);
 }
 
 /** Encode a relative path for use as a URL, preserving "/" separators. */
@@ -139,9 +145,91 @@ export function $all(sel, root = document) { return Array.from(root.querySelecto
 
 // ---- codec support gate ------------------------------------------------
 let _probe;
-export function canBrowserPlay(mimeType) {
+function _probes(mimeType) {
   if (!_probe) _probe = document.createElement('video');
-  if (!mimeType) return true;
   const verdict = _probe.canPlayType(mimeType);
   return verdict === 'probably' || verdict === 'maybe';
+}
+
+export function canBrowserPlay(mimeType) {
+  if (!mimeType) return true;
+  if (_probes(mimeType)) return true;
+  // QuickTime (.mov) containers usually wrap H.264/AAC — the same codecs a
+  // browser already decodes inside .mp4 — yet Chrome/Firefox report "" for the
+  // bare "video/quicktime" type. Fall back to probing the equivalent .mp4
+  // codec string so playable .mov files aren't flagged as unsupported.
+  if (mimeType === 'video/quicktime') {
+    return (
+      _probes('video/mp4; codecs="avc1.42E01E, mp4a.40.2"') ||
+      _probes('video/mp4')
+    );
+  }
+  return false;
+}
+
+// ---- captions ----------------------------------------------------------
+/** Parse one timestamp ("H:MM:SS.mmm", "MM:SS,mmm", …) to seconds, or null. */
+function _parseTimestamp(s) {
+  const m = /^(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:[.,]\d+)?)$/.exec(s.trim());
+  if (!m) return null;
+  const h = m[1] ? Number(m[1]) : 0;
+  const min = Number(m[2]);
+  const sec = Number(m[3].replace(',', '.'));
+  if (!Number.isFinite(min) || !Number.isFinite(sec)) return null;
+  return h * 3600 + min * 60 + sec;
+}
+
+/** First whitespace-delimited token of a string (strips VTT cue settings). */
+function _firstToken(s) {
+  return s.trim().split(/\s+/)[0] || '';
+}
+
+/** Pull {start,end} from a cue's timing line (SRT/VTT "-->" or SBV comma). */
+function _parseTiming(line) {
+  let left;
+  let right;
+  if (line.includes('-->')) {
+    const parts = line.split('-->');
+    left = _firstToken(parts[0]);
+    right = _firstToken(parts[1] || '');
+  } else if (line.includes(',')) {
+    // SBV/YouTube: "0:00:03.369,0:00:07.128" (ms uses '.', so ',' splits cleanly)
+    const idx = line.indexOf(',');
+    left = _firstToken(line.slice(0, idx));
+    right = _firstToken(line.slice(idx + 1));
+  } else {
+    return null;
+  }
+  const start = _parseTimestamp(left);
+  const end = _parseTimestamp(right);
+  if (start == null || end == null) return null;
+  return { start, end };
+}
+
+/**
+ * Parse SRT, WebVTT, or SBV caption text into sorted cues
+ * [{ start, end, text }] in seconds. Index lines and headers are ignored,
+ * inline tags (<b>, <i>, …) are stripped. Returns [] for non-caption text.
+ */
+export function parseCaptions(text) {
+  if (!text || typeof text !== 'string') return [];
+  const blocks = text.replace(/\r\n?/g, '\n').replace(/^\uFEFF/, '').split(/\n{2,}/);
+  const cues = [];
+  for (const block of blocks) {
+    const lines = block.split('\n');
+    let timing = null;
+    let textStart = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const t = _parseTiming(lines[i]);
+      if (t) { timing = t; textStart = i + 1; break; }
+    }
+    if (!timing || !(timing.end > timing.start)) continue;
+    const body = lines.slice(textStart).join('\n')
+      .replace(/<[^>]+>/g, '')   // strip SRT/VTT inline formatting tags
+      .replace(/[ \t]+\n/g, '\n')
+      .trim();
+    if (body) cues.push({ start: timing.start, end: timing.end, text: body });
+  }
+  cues.sort((a, b) => a.start - b.start);
+  return cues;
 }
