@@ -86,12 +86,12 @@ class UI {
   renderLibrary() {
     const list = this.r.libraryList;
     const entries = store.library; // present files, already sorted by the server
-    // Also surface authored-but-missing clips so they can be forgotten.
+    const videos = entries.filter((v) => v.kind !== 'pdf');
+    const pdfs = entries.filter((v) => v.kind === 'pdf');
     const missing = Object.entries(store.doc.clips)
       .filter(([, c]) => c.missing)
       .map(([name]) => name);
 
-    // Offer a one-click bulk cleanup whenever any missing clips are showing.
     if (this.r.forgetMissingBtn) {
       this.r.forgetMissingBtn.hidden = missing.length === 0;
       this.r.forgetMissingBtn.textContent = `🗑 Forget ${missing.length} missing`;
@@ -101,10 +101,26 @@ class UI {
     const empty = entries.length === 0 && missing.length === 0;
     this.r.libraryEmpty.hidden = !empty;
     list.hidden = empty;
+    if (empty) return;
 
     const smap = this.serverMap();
-    for (const v of entries) list.append(this._card(v.name, smap.get(v.name)));
-    for (const name of missing) list.append(this._card(name, null));
+    if (videos.length) {
+      list.append(this._sectionHeader('Videos', videos.length));
+      for (const v of videos) list.append(this._card(v.name, smap.get(v.name)));
+    }
+    if (pdfs.length) {
+      list.append(this._sectionHeader('PDFs', pdfs.length));
+      for (const v of pdfs) list.append(this._card(v.name, smap.get(v.name)));
+    }
+    if (missing.length) {
+      list.append(this._sectionHeader('⚠ Missing', missing.length));
+      for (const name of missing) list.append(this._card(name, null));
+    }
+  }
+
+  /** A non-interactive section header row for the library listbox. */
+  _sectionHeader(label, count) {
+    return el('li', { class: 'lib-section', role: 'presentation' }, `${label} (${count})`);
   }
 
   _card(name, sv) {
