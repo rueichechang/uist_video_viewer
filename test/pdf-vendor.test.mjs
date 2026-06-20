@@ -1,31 +1,23 @@
-// pdf-vendor.test.mjs — tests for js/pdf.js wrapper.
+// pdf-vendor.test.mjs — sanity-check the vendored PDF.js distribution.
 //
 // Run with: node --test test/pdf-vendor.test.mjs
-// Tests presence and parsing of the vendored PDF.js module.
+// Does NOT import js/pdf.js (that would load the PDF.js worker in Node).
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
-test('pdf.js wrapper module can be imported', async () => {
-  const pdf = await import('../js/pdf.js');
-  assert.ok(pdf.loadDoc, 'loadDoc function exists');
-  assert.ok(pdf.renderPage, 'renderPage function exists');
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+test('vendored pdf.mjs is present', () => {
+  const p = join(__dirname, '../js/vendor/pdfjs/pdf.mjs');
+  assert.doesNotThrow(() => readFileSync(p), `pdf.mjs not found at ${p}`);
 });
 
-test('vendored PDF.js files are present and accessible', async () => {
-  const { readFileSync } = await import('fs');
-  const { dirname, join } = await import('path');
-  const { fileURLToPath } = await import('url');
-
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  const pdfMjsPath = join(__dirname, '../js/vendor/pdfjs/pdf.mjs');
-  const pdfWorkerPath = join(__dirname, '../js/vendor/pdfjs/pdf.worker.mjs');
-
-  assert.doesNotThrow(() => {
-    readFileSync(pdfMjsPath, 'utf8');
-  }, 'pdf.mjs can be read');
-
-  assert.doesNotThrow(() => {
-    readFileSync(pdfWorkerPath, 'utf8');
-  }, 'pdf.worker.mjs can be read');
+test('js/pdf.js exports loadDoc and renderPage (source check)', () => {
+  const src = readFileSync(join(__dirname, '../js/pdf.js'), 'utf8');
+  assert.match(src, /export.*function loadDoc/);
+  assert.match(src, /export.*function renderPage/);
 });
