@@ -386,17 +386,31 @@ class UI {
   }
 
   _renderPdfPreview() {
-    const clip = store.getClip(this.selected);
-    const sv = this.serverEntry(this.selected);
+    const name = this.selected;
+    const clip = store.getClip(name);
+    const sv = this.serverEntry(name);
     if (!clip || clip.kind !== 'pdf' || !sv) return;
+    const needCount = clip.pageCount == null;
     loadDoc(sv.url)
       .then(({ doc, numPages }) => {
-        if (clip.pageCount == null) store.setPageCount(sv, numPages); // resolves count once
+        if (this.selected !== name) return null; // selection moved on
+        if (needCount) {
+          store.setPageCount(sv, numPages); // resolves count once + clamps clip.pages
+          // The clamp may have dropped pages (PDF shorter than the default 1..10),
+          // so repaint the list and the library card/playlist to match the store.
+          this._renderPdfPageList(store.getClip(name));
+          this.renderCard(name);
+          this.updatePlayState();
+        }
         const page = clamp(this._pdfPreviewPage, 1, numPages);
         this._pdfPreviewPage = page;
         return renderPage(doc, page, this.r.pdfPreviewCanvas, { maxDim: 1000 });
       })
-      .then(() => { this.r.pdfPageReadout.textContent = `page ${this._pdfPreviewPage}${clip.pageCount != null ? ` of ${clip.pageCount}` : ''}`; })
+      .then(() => {
+        if (this.selected !== name) return;
+        const c = store.getClip(name);
+        this.r.pdfPageReadout.textContent = `page ${this._pdfPreviewPage}${c && c.pageCount != null ? ` of ${c.pageCount}` : ''}`;
+      })
       .catch(() => { /* broken PDF: leave the canvas as-is */ });
   }
 
