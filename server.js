@@ -67,6 +67,7 @@ const STATIC_TYPES = {
   '.vtt': 'text/vtt; charset=utf-8',
   '.srt': 'text/plain; charset=utf-8',
   '.txt': 'text/plain; charset=utf-8',
+  '.pdf': 'application/pdf',
 };
 
 /**
@@ -173,8 +174,8 @@ function listVideos() {
   const all = [];
   walkFiles(VIDEO_DIR, '', all);
 
-  // Index caption sidecars by (folder, stem) so a video only claims a caption
-  // that sits beside it, never one with the same stem in a different folder.
+  // Index caption sidecars by (folder, stem) so a clip only claims a caption
+  // beside it (unchanged from before).
   const captions = new Map();
   for (const f of all) {
     if (CAPTION_TYPES.has(path.extname(f.name).toLowerCase())) {
@@ -183,9 +184,34 @@ function listVideos() {
     }
   }
 
-  return all
-    .filter((f) => VIDEO_TYPES[path.extname(f.name).toLowerCase()])
-    .map((f) => {
+  // Group every file by (folder, submission stem). A stem with a video plays as
+  // a video; a stem with no video but a PDF plays as a PDF slideshow.
+  const groups = new Map(); // key -> { videos: [f], pdfs: [f] }
+  for (const f of all) {
+    const ext = path.extname(f.name).toLowerCase();
+    const isVideo = VIDEO_TYPES[ext] !== undefined;
+    const isPdf = ext === '.pdf';
+    if (!isVideo && !isPdf) continue;
+    const key = `${f.dir}\0${captionStem(f.name)}`;
+    let g = groups.get(key);
+    if (!g) { g = { videos: [], pdfs: [] }; groups.set(key, g); }
+    (isVideo ? g.videos : g.pdfs).push(f);
+  }
+
+  // For each group pick the file(s) to expose: all videos when present,
+  // otherwise the first PDF (sorted) for a video-less stem.
+  const chosen = [];
+  for (const g of groups.values()) {
+    if (g.videos.length) {
+      for (const f of g.videos) chosen.push({ f, kind: 'video' });
+    } else if (g.pdfs.length) {
+      const f = g.pdfs.slice().sort((a, b) => a.rel.localeCompare(b.rel))[0];
+      chosen.push({ f, kind: 'pdf' });
+    }
+  }
+
+  return chosen
+    .map(({ f, kind }) => {
       const full = path.join(VIDEO_DIR, f.rel);
       let size = 0;
       let mtimeMs = 0;
@@ -193,18 +219,17 @@ function listVideos() {
         const st = fs.statSync(full);
         size = st.size;
         mtimeMs = Math.round(st.mtimeMs);
-      } catch (_) {
-        /* ignore unreadable entries */
-      }
+      } catch (_) { /* ignore unreadable entries */ }
       const caption = captions.get(`${f.dir}\0${captionStem(f.name)}`) || null;
       return {
         name: f.rel,
         url: '/videos/' + encodePath(f.rel),
-        type: VIDEO_TYPES[path.extname(f.name).toLowerCase()],
+        type: kind === 'pdf' ? 'application/pdf' : VIDEO_TYPES[path.extname(f.name).toLowerCase()],
         size,
         mtimeMs,
         category: f.dir ? f.dir.split('/')[0] : '',
         captionUrl: caption ? '/videos/' + encodePath(caption) : null,
+        kind,
       };
     })
     .sort((a, b) =>
