@@ -141,6 +141,45 @@
             <p id="saveStatus" class="save-status" aria-live="polite"></p>
           </div>
         </div>
+
+        <div id="pdfEditor" class="editor editor--pdf" hidden>
+          <div class="editor__preview">
+            <canvas id="pdfPreviewCanvas" class="preview-pdf" aria-label="PDF page preview"></canvas>
+            <div class="pdf-pagebar">
+              <button id="pdfPrevPageBtn" class="btn btn--ghost btn--sm" type="button" aria-label="Preview previous page">‹ Prev</button>
+              <span id="pdfPageReadout" class="muted" aria-live="polite">—</span>
+              <button id="pdfNextPageBtn" class="btn btn--ghost btn--sm" type="button" aria-label="Preview next page">Next ›</button>
+            </div>
+          </div>
+
+          <div class="editor__fields">
+            <label class="field">
+              <span class="field__label">Title <span class="req" aria-hidden="true">*</span></span>
+              <input id="pdfTitleInput" class="field__input" type="text" maxlength="120"
+                     required aria-required="true" aria-describedby="pdfTitleError"
+                     placeholder="Title shown as the headline" />
+              <span id="pdfTitleError" class="inline-error" role="alert" hidden>A title is required.</span>
+            </label>
+
+            <div class="segments">
+              <div class="segments__head">
+                <span class="field__label">Pages</span>
+                <button id="pdfAddPageBtn" class="btn btn--ghost btn--sm" type="button"
+                        aria-label="Add a page to the slideshow">+ Add page</button>
+              </div>
+              <ul id="pdfPageList" class="seg-list" aria-label="Pages in the slideshow"></ul>
+            </div>
+
+            <label class="field field--check">
+              <input id="pdfEnabledInput" type="checkbox" checked />
+              <span>Include this PDF in the showreel</span>
+            </label>
+
+            <button id="pdfForgetBtn" class="btn btn--ghost btn--sm" type="button" hidden>
+              🗑 remove this PDF
+            </button>
+          </div>
+        </div>
       </section>
 
       <!-- ===================== OPTIONS (req 3) ===================== -->
@@ -202,6 +241,7 @@
   <div id="player" class="player" hidden tabindex="-1" aria-label="Showreel playback" role="region">
     <video id="videoA" class="player__video is-active" playsinline></video>
     <video id="videoB" class="player__video" playsinline></video>
+    <canvas id="pdfCanvas" class="player__pdf" aria-hidden="true"></canvas>
 
     <div id="titleOverlay" class="title-overlay" role="status" aria-live="polite"></div>
     <div id="playerNotice" class="player-notice" role="status" aria-live="polite"></div>

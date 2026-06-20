@@ -47,6 +47,18 @@ const refs = {
   forgetBtn: byId('forgetBtn'),
   saveStatus: byId('saveStatus'),
 
+  pdfEditor: byId('pdfEditor'),
+  pdfPreviewCanvas: byId('pdfPreviewCanvas'),
+  pdfPrevPageBtn: byId('pdfPrevPageBtn'),
+  pdfNextPageBtn: byId('pdfNextPageBtn'),
+  pdfPageReadout: byId('pdfPageReadout'),
+  pdfPageList: byId('pdfPageList'),
+  pdfAddPageBtn: byId('pdfAddPageBtn'),
+  pdfTitleInput: byId('pdfTitleInput'),
+  pdfTitleError: byId('pdfTitleError'),
+  pdfEnabledInput: byId('pdfEnabledInput'),
+  pdfForgetBtn: byId('pdfForgetBtn'),
+
   // options
   optionsPane: byId('optionsPane'),
   overlayEnabled: byId('overlayEnabled'),
@@ -61,6 +73,7 @@ const refs = {
   container: byId('player'),
   videoA: byId('videoA'),
   videoB: byId('videoB'),
+  pdfCanvas: byId('pdfCanvas'),
   titleOverlay: byId('titleOverlay'),
   captionOverlay: byId('captionOverlay'),
   clipProgress: byId('clipProgress'),
@@ -108,6 +121,7 @@ function init() {
     container: refs.container,
     videoA: refs.videoA,
     videoB: refs.videoB,
+    pdfCanvas: refs.pdfCanvas,
     titleOverlay: refs.titleOverlay,
     captionOverlay: refs.captionOverlay,
     clipProgress: refs.clipProgress,
@@ -121,6 +135,12 @@ function init() {
       if (!sv) return;
       store.setDuration(sv, dur);
       ui.renderCard(sv.name);
+    },
+    onPageCount: (sv, n) => {
+      if (!sv) return;
+      store.setPageCount(sv, n);
+      ui.renderCard(sv.name);
+      if (ui.selected === sv.name) ui.renderAuthoring();
     },
   });
 
