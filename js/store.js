@@ -19,6 +19,10 @@ const LEGACY = { config: 'marquee.config.v1', bak: 'marquee.config.v1.bak', dur:
 // `segments` array. normalizeDoc() migrates v1 docs transparently on load.
 const SCHEMA_VERSION = 2;
 
+const DEFAULT_PDF_PAGES = 10;
+const DEFAULT_PAGE_SECONDS = 6;
+const MIN_PAGE_SECONDS = 0.5;
+
 const DEFAULT_OPTIONS = {
   mode: 'sequential-loop',
   titleOverlayEnabled: true,
@@ -32,6 +36,34 @@ function nowISO() {
 /** The canonical "whole clip" segment: play from 0 to the end of the file. */
 function defaultSegment() {
   return { in: 0, out: 0, outIsEnd: true }; // outIsEnd: play to the end until a specific OUT is pinned
+}
+
+/** The default page list for a PDF clip: pages 1..min(10, pageCount) @ 6s. */
+function defaultPdfPages(pageCount) {
+  const last = pageCount != null ? Math.max(1, Math.min(DEFAULT_PDF_PAGES, pageCount)) : DEFAULT_PDF_PAGES;
+  const pages = [];
+  for (let p = 1; p <= last; p++) pages.push({ page: p, seconds: DEFAULT_PAGE_SECONDS });
+  return pages;
+}
+
+/** Coerce one arbitrary object into a valid {page, seconds}. */
+function coercePage(p) {
+  const page = Number.isFinite(p.page) ? Math.max(1, Math.round(p.page)) : 1;
+  const seconds = Number.isFinite(p.seconds) ? Math.max(MIN_PAGE_SECONDS, round3(p.seconds)) : DEFAULT_PAGE_SECONDS;
+  return { page, seconds };
+}
+
+/** Resolve a PDF clip's page list: coerce, drop out-of-range, sort, dedupe by
+ *  page (first wins), and guarantee at least one page. */
+function normalizePages(c, pageCount) {
+  let arr = Array.isArray(c.pages)
+    ? c.pages.filter((p) => p && typeof p === 'object').map(coercePage)
+    : [];
+  if (pageCount != null) arr = arr.filter((p) => p.page <= pageCount);
+  arr.sort((a, b) => a.page - b.page);
+  const seen = new Set();
+  arr = arr.filter((p) => (seen.has(p.page) ? false : (seen.add(p.page), true)));
+  return arr.length ? arr : defaultPdfPages(pageCount);
 }
 
 /** Coerce one arbitrary object into a valid segment. `defaultEnd` is the
@@ -71,10 +103,11 @@ function normalizeSegments(c, dur) {
   return segs;
 }
 
-function defaultClip(name, fileSig, order) {
-  return {
+function defaultClip(name, fileSig, order, kind) {
+  const k = kind === 'pdf' ? 'pdf' : 'video';
+  const base = {
     title: titleFromName(name),
-    segments: [defaultSegment()],
+    kind: k,
     duration: null,
     enabled: true,
     order,
@@ -83,6 +116,13 @@ function defaultClip(name, fileSig, order) {
     fileSig: fileSig || null,
     modifiedAt: nowISO(),
   };
+  if (k === 'pdf') {
+    base.pages = defaultPdfPages(null);
+    base.pageCount = null;
+  } else {
+    base.segments = [defaultSegment()];
+  }
+  return base;
 }
 
 function freshDoc() {
@@ -105,9 +145,10 @@ function normalizeDoc(raw) {
   for (const [name, c] of Object.entries(clips)) {
     if (!c || typeof c !== 'object') continue;
     const dur = Number.isFinite(c.duration) ? c.duration : null;
-    doc.clips[name] = {
+    const kind = c.kind === 'pdf' ? 'pdf' : 'video';
+    const common = {
       title: typeof c.title === 'string' ? c.title.slice(0, 120) : titleFromName(name),
-      segments: normalizeSegments(c, dur),
+      kind,
       duration: dur,
       enabled: c.enabled !== false,
       order: Number.isFinite(c.order) ? c.order : (order += 10),
@@ -116,6 +157,12 @@ function normalizeDoc(raw) {
       fileSig: (c.fileSig && Number.isFinite(c.fileSig.size) && Number.isFinite(c.fileSig.mtimeMs)) ? c.fileSig : null,
       modifiedAt: typeof c.modifiedAt === 'string' ? c.modifiedAt : nowISO(),
     };
+    if (kind === 'pdf') {
+      const pageCount = Number.isFinite(c.pageCount) ? Math.round(c.pageCount) : null;
+      doc.clips[name] = { ...common, pages: normalizePages(c, pageCount), pageCount };
+    } else {
+      doc.clips[name] = { ...common, segments: normalizeSegments(c, dur) };
+    }
   }
   return doc;
 }
@@ -206,6 +253,21 @@ class Store extends EventTarget {
     this.emit('clip-changed', { name, removed: true });
   }
 
+  /**
+   * Drop every clip currently flagged `missing` — authoring data kept for files
+   * that have left the folder. Returns how many were removed so the UI can
+   * confirm; only persists/emits when something actually changed.
+   */
+  forgetMissing() {
+    const names = Object.keys(this.doc.clips).filter((n) => this.doc.clips[n].missing);
+    for (const name of names) delete this.doc.clips[name];
+    if (names.length) {
+      this.persist();
+      this.emit('clip-changed', { removedMissing: names.length });
+    }
+    return names.length;
+  }
+
   /** A clip that carries no user authoring — exactly what defaultClip() makes
    *  (auto title, one whole-file segment, enabled). Such an entry is safe to
    *  overwrite when folding a moved clip onto it. */
@@ -274,7 +336,7 @@ class Store extends EventTarget {
       const sig = { size: v.size, mtimeMs: v.mtimeMs };
       let clip = this.doc.clips[v.name];
       if (!clip) {
-        clip = defaultClip(v.name, sig, i * 10);
+        clip = defaultClip(v.name, sig, i * 10, v.kind);
         // adopt a cached duration if we have one for this exact file signature
         const cached = this.getCachedDuration(v);
         if (cached != null) clip.duration = cached;
