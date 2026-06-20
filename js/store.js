@@ -13,6 +13,7 @@ import { MIN_CLIP, clamp, debounce, round3, titleFromName, baseName } from './ut
 const CONFIG_KEY = 'showreel.config.v1';
 const BAK_KEY = 'showreel.config.v1.bak';
 const DUR_KEY = 'showreel.durations.v1';
+const PAGES_KEY = 'showreel.pagecounts.v1';
 // Previous key names (app was called "marquee"); migrated on first load.
 const LEGACY = { config: 'marquee.config.v1', bak: 'marquee.config.v1.bak', dur: 'marquee.durations.v1' };
 // v1 stored a single flat trim (in/out/outIsEnd) per clip; v2 stores a
@@ -173,6 +174,7 @@ class Store extends EventTarget {
     this.doc = freshDoc();
     this.library = []; // runtime list from /api/videos: {name,url,type,size,mtimeMs}
     this.durations = {}; // cache: "name|size|mtime" -> seconds
+    this.pageCounts = {}; // cache: "name|size|mtime" -> page count
     this.storageOk = true;
     this._save = debounce(() => this._write(), 300);
   }
@@ -191,6 +193,11 @@ class Store extends EventTarget {
       this.durations = JSON.parse(localStorage.getItem(DUR_KEY) || '{}') || {};
     } catch (_) {
       this.durations = {};
+    }
+    try {
+      this.pageCounts = JSON.parse(localStorage.getItem(PAGES_KEY) || '{}') || {};
+    } catch (_) {
+      this.pageCounts = {};
     }
   }
 
@@ -337,9 +344,18 @@ class Store extends EventTarget {
       let clip = this.doc.clips[v.name];
       if (!clip) {
         clip = defaultClip(v.name, sig, i * 10, v.kind);
-        // adopt a cached duration if we have one for this exact file signature
-        const cached = this.getCachedDuration(v);
-        if (cached != null) clip.duration = cached;
+        if (v.kind === 'pdf') {
+          const cachedPages = this.getCachedPageCount(v);
+          if (cachedPages != null) {
+            clip.pageCount = cachedPages;
+            clip.pages = clip.pages.filter((p) => p.page <= cachedPages);
+            if (!clip.pages.length) clip.pages = defaultPdfPages(cachedPages);
+          }
+        } else {
+          // adopt a cached duration if we have one for this exact file signature
+          const cached = this.getCachedDuration(v);
+          if (cached != null) clip.duration = cached;
+        }
         this.doc.clips[v.name] = clip;
       } else {
         clip.missing = false;
@@ -394,6 +410,31 @@ class Store extends EventTarget {
     this.emit('duration', { name: v.name, duration: dur });
   }
 
+  // ---- page-count cache (PDF clips) -----------------------------------
+  _pageKey(v) { return `${v.name}|${v.size}|${v.mtimeMs}`; }
+
+  getCachedPageCount(v) {
+    const n = this.pageCounts[this._pageKey(v)];
+    return Number.isFinite(n) ? n : null;
+  }
+
+  /** Record a PDF's resolved page count and clamp the clip's page list to it. */
+  setPageCount(v, count) {
+    if (!Number.isFinite(count) || count < 1) return;
+    const n = Math.round(count);
+    this.pageCounts[this._pageKey(v)] = n;
+    try { localStorage.setItem(PAGES_KEY, JSON.stringify(this.pageCounts)); } catch (_) { /* ignore */ }
+    const clip = this.doc.clips[v.name];
+    if (clip && clip.kind === 'pdf') {
+      clip.pageCount = n;
+      let pages = (clip.pages || []).filter((p) => p.page >= 1 && p.page <= n);
+      if (!pages.length) pages = defaultPdfPages(n);
+      clip.pages = pages;
+      this.persist();
+    }
+    this.emit('pagecount', { name: v.name, pageCount: n });
+  }
+
   // ---- validity --------------------------------------------------------
   /**
    * Resolve a clip's segments to effective { in, out } pairs in seconds,
@@ -411,8 +452,11 @@ class Store extends EventTarget {
     });
   }
 
-  /** Total trimmed (played) length across all segments, or null if unknowable. */
+  /** Total played length: Σ page seconds for PDFs, Σ segment lengths for video. */
   trimmedLength(clip) {
+    if (clip.kind === 'pdf') {
+      return (clip.pages || []).reduce((sum, p) => sum + (Number.isFinite(p.seconds) ? p.seconds : 0), 0);
+    }
     let total = 0;
     for (const { in: i, out: o } of this.effectiveSegments(clip)) {
       if (o == null) return null;
@@ -425,6 +469,14 @@ class Store extends EventTarget {
     const reasons = [];
     if (clip.missing) reasons.push('file missing');
     if (!clip.title || !clip.title.trim()) reasons.push('needs title');
+    if (clip.kind === 'pdf') {
+      const inRange = (clip.pages || []).filter(
+        (p) => clip.pageCount == null || (p.page >= 1 && p.page <= clip.pageCount)
+      );
+      if (!inRange.length) reasons.push('no pages selected');
+      return { valid: reasons.length === 0, reasons };
+    }
+    // ---- video (existing logic below) ----
     if (serverEntry && serverEntry.unplayable) reasons.push('unsupported format');
     const segs = this.effectiveSegments(clip);
     // Validate every segment; dedupe reasons so a clip with many bad segments

@@ -59,3 +59,44 @@ test('normalizeDoc gives a PDF clip with no pages the default list', () => {
   }));
   assert.equal(res.doc.clips['y.pdf'].pages.length, 10);
 });
+
+test('setPageCount clamps the page list to the real page count', () => {
+  reset();
+  const v = { name: 'p.pdf', kind: 'pdf', type: 'application/pdf', size: 1, mtimeMs: 1, url: '' };
+  store.reconcile([v]);                       // default pages 1..10
+  store.setPageCount(v, 18);                  // 18-page PDF: keep 1..10
+  assert.equal(store.doc.clips['p.pdf'].pages.length, 10);
+  store.setPageCount(v, 5);                   // shrink: keep 1..5
+  assert.deepEqual(store.doc.clips['p.pdf'].pages.map((x) => x.page), [1, 2, 3, 4, 5]);
+  assert.equal(store.doc.clips['p.pdf'].pageCount, 5);
+});
+
+test('setPageCount resets to defaults when every page is out of range', () => {
+  reset();
+  const v = { name: 'q.pdf', kind: 'pdf', type: 'application/pdf', size: 1, mtimeMs: 1, url: '' };
+  store.reconcile([v]);
+  store.doc.clips['q.pdf'].pages = [{ page: 50, seconds: 6 }, { page: 99, seconds: 6 }];
+  store.setPageCount(v, 3);                   // all dropped -> reset to 1..3
+  assert.deepEqual(store.doc.clips['q.pdf'].pages.map((x) => x.page), [1, 2, 3]);
+});
+
+test('trimmedLength sums per-page seconds for a PDF clip', () => {
+  reset();
+  const clip = { kind: 'pdf', pages: [{ page: 1, seconds: 6 }, { page: 2, seconds: 4 }, { page: 5, seconds: 2 }] };
+  assert.equal(store.trimmedLength(clip), 12);
+});
+
+test('clipValidity for PDF clips: needs a title and >=1 in-range page', () => {
+  reset();
+  const ok = { kind: 'pdf', title: 'Paper', missing: false, pages: [{ page: 1, seconds: 6 }], pageCount: 10 };
+  assert.equal(store.clipValidity(ok, null).valid, true);
+
+  const noTitle = { kind: 'pdf', title: '', missing: false, pages: [{ page: 1, seconds: 6 }], pageCount: 10 };
+  assert.deepEqual(store.clipValidity(noTitle, null).reasons.includes('needs title'), true);
+
+  const noPages = { kind: 'pdf', title: 'P', missing: false, pages: [{ page: 99, seconds: 6 }], pageCount: 3 };
+  assert.equal(store.clipValidity(noPages, null).valid, false);
+
+  const missing = { kind: 'pdf', title: 'P', missing: true, pages: [{ page: 1, seconds: 6 }], pageCount: 3 };
+  assert.deepEqual(store.clipValidity(missing, null).reasons.includes('file missing'), true);
+});
