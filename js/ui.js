@@ -58,6 +58,7 @@ class UI {
     this._bindConfigButtons();
     this.r.playBtn.addEventListener('click', () => this.onPlay());
     this.r.reloadBtn.addEventListener('click', () => this.onReload());
+    this.r.forgetMissingBtn?.addEventListener('click', () => this._confirmForgetMissing());
     this.r.libraryEmpty.querySelector('[data-action="reload"]')
       ?.addEventListener('click', () => this.onReload());
   }
@@ -89,6 +90,12 @@ class UI {
     const missing = Object.entries(store.doc.clips)
       .filter(([, c]) => c.missing)
       .map(([name]) => name);
+
+    // Offer a one-click bulk cleanup whenever any missing clips are showing.
+    if (this.r.forgetMissingBtn) {
+      this.r.forgetMissingBtn.hidden = missing.length === 0;
+      this.r.forgetMissingBtn.textContent = `🗑 Forget ${missing.length} missing`;
+    }
 
     list.textContent = '';
     const empty = entries.length === 0 && missing.length === 0;
@@ -207,6 +214,39 @@ class UI {
       const next = cards[idx + (e.key === 'ArrowDown' ? 1 : -1)];
       if (next) next.focus();
     }
+  }
+
+  /** Confirm, then drop every authored-but-missing clip in one go. */
+  _confirmForgetMissing() {
+    const names = Object.entries(store.doc.clips)
+      .filter(([, c]) => c.missing)
+      .map(([name]) => name);
+    if (!names.length) return;
+    const plural = names.length === 1 ? '' : 's';
+    const ul = el('ul', { class: 'modal__list' });
+    for (const name of names) ul.append(el('li', { text: idFromName(name), title: name }));
+    this.showModal({
+      title: `Forget ${names.length} missing clip${plural}?`,
+      body: [
+        el('p', {
+          text: `Their video file${plural} are no longer in the folder. Forgetting clears the saved title and trim for ${names.length === 1 ? 'this clip' : 'these clips'} from this browser; import a backup to restore.`,
+        }),
+        ul,
+      ],
+      actions: [
+        {
+          label: `Forget ${names.length}`,
+          kind: 'btn--primary',
+          onClick: () => {
+            const n = store.forgetMissing();
+            this.refreshAll();
+            this._flashSaved();
+            this.toast(`Forgot ${n} missing clip${n === 1 ? '' : 's'}.`);
+          },
+        },
+        { label: 'Cancel' },
+      ],
+    });
   }
 
   // ===================== selection / authoring =====================

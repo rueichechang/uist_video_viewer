@@ -18,6 +18,7 @@ const refs = {
   // library
   libraryList: byId('libraryList'),
   libraryEmpty: byId('libraryEmpty'),
+  forgetMissingBtn: byId('forgetMissingBtn'),
 
   // authoring
   authoringEmpty: byId('authoringEmpty'),

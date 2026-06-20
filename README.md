@@ -110,7 +110,9 @@ found anywhere under `videos/`:
   and options are saved in your browser's `localStorage` (with a `.bak` copy),
   written after every edit and flushed when the tab closes. Use **Export** to
   move a setup between machines or back it up. Authoring data for a file that
-  disappears is *kept* and flagged "Missing", not deleted.
+  disappears is *kept* and flagged "Missing", not deleted — clear those entries
+  with **🗑 Forget missing** in the Library header (bulk) or **remove this video**
+  on a selected missing clip.
 - **Durations & thumbnails** come from the browser (there's no `ffmpeg`), so the
   library shows "Loading metadata…" briefly on first scan, then caches the result.
 - **Trimming is to the nearest decodable frame** (no re-encoding), so the start

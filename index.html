@@ -39,8 +39,12 @@
       <nav id="libraryPane" class="pane pane--library is-active" aria-label="Video library" data-pane="library">
         <div class="pane__head">
           <h2 class="pane__title">Library</h2>
-          <button id="reloadBtn" class="btn btn--ghost btn--sm" type="button"
-                  aria-label="Rescan the videos folder">⟳ Rescan</button>
+          <div class="btn-row">
+            <button id="forgetMissingBtn" class="btn btn--ghost btn--sm" type="button" hidden
+                    aria-label="Remove all clips whose files are no longer in the folder">🗑 Forget missing</button>
+            <button id="reloadBtn" class="btn btn--ghost btn--sm" type="button"
+                    aria-label="Rescan the videos folder">⟳ Rescan</button>
+          </div>
         </div>
         <ul id="libraryList" class="library" role="listbox" aria-label="Videos" tabindex="0"></ul>
         <div id="libraryEmpty" class="empty" hidden>
