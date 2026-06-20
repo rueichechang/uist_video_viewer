@@ -5,6 +5,7 @@
 // click stays synchronous within the user gesture).
 
 import { store } from './store.js';
+import { loadDoc, renderPage } from './pdf.js';
 import {
   MIN_CLIP, clamp, round3, debounce, formatTime, formatShort, parseTime,
   titleFromName, idFromName, canBrowserPlay, el, $, $all,
@@ -135,13 +136,18 @@ class UI {
     });
 
     const thumb = el('div', { class: 'lib-card__thumb' });
-    if (sv && !sv.unplayable) {
+    if (clip.kind === 'pdf' && sv) {
+      const cv = el('canvas', { class: 'thumb' });
+      cv.setAttribute('aria-hidden', 'true');
+      this._observePdfThumb(cv, sv);
+      thumb.append(cv);
+    } else if (sv && !sv.unplayable) {
       const vid = el('video', { class: 'thumb', muted: true, preload: 'none', playsInline: true });
       vid.setAttribute('aria-hidden', 'true');
       this._observeThumb(vid, sv, clip);
       thumb.append(vid);
     } else {
-      thumb.append(el('span', { class: 'placeholder', text: '🎞' }));
+      thumb.append(el('span', { class: 'placeholder', text: clip.kind === 'pdf' ? '📄' : '🎞' }));
     }
 
     const body = el('div', { class: 'lib-card__body' });
@@ -157,6 +163,12 @@ class UI {
 
   _metaText(clip) {
     if (clip.missing) return 'File no longer in folder';
+    if (clip.kind === 'pdf') {
+      const n = (clip.pages || []).length;
+      const len = store.trimmedLength(clip);
+      const count = clip.pageCount != null ? ` of ${clip.pageCount}` : '';
+      return `${n}${count} page${n === 1 ? '' : 's'} · plays ${formatShort(len)}`;
+    }
     const segs = clip.segments || [];
     if (clip.duration == null) {
       // Playable before duration is known only if every segment has a pinned OUT.
@@ -180,6 +192,7 @@ class UI {
     const add = (cls, text) => wrap.append(el('span', { class: `badge ${cls}`, text }));
     const validity = store.clipValidity(clip, sv);
     if (clip.missing) { add('badge--bad', '⚠ Missing'); return wrap; }
+    if (clip.kind === 'pdf') add('badge--pdf', 'PDF');
     if (sv && sv.unplayable) add('badge--bad', '⚠ Unsupported');
     if (!clip.title || !clip.title.trim()) add('badge--warn', '⚠ Needs title');
     if (clip.changed) add('badge--warn', '↻ File changed');
@@ -206,6 +219,23 @@ class UI {
     const at = clip.duration != null ? clamp(firstIn, 0, Math.max(0, clip.duration - 0.05)) : (firstIn || 0.1);
     vid.dataset.src = `${sv.url}#t=${at.toFixed(2)}`;
     this._thumbObserver.observe(vid);
+  }
+
+  /** Lazily render the first PDF page into a card thumbnail when it scrolls in. */
+  _observePdfThumb(canvas, sv) {
+    if (!this._pdfThumbObserver) {
+      this._pdfThumbObserver = new IntersectionObserver((items) => {
+        for (const it of items) {
+          if (!it.isIntersecting) continue;
+          const cv = it.target;
+          this._pdfThumbObserver.unobserve(cv);
+          loadDoc(sv.url)
+            .then(({ doc }) => renderPage(doc, 1, cv, { maxDim: 400 }))
+            .catch(() => { /* a broken PDF just shows blank */ });
+        }
+      }, { rootMargin: '200px' });
+    }
+    this._pdfThumbObserver.observe(canvas);
   }
 
   renderCard(name) {
