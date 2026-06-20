@@ -16,6 +16,7 @@
 //     own key handler never races the browser's auto-exit.
 
 import { MIN_CLIP, clamp, shuffle, parseCaptions, encodePath } from './util.js';
+import { loadDoc, renderPage } from './pdf.js';
 
 const EPS = 0.02;          // ~half a frame at 30fps
 const PREP_TIMEOUT = 15000;
@@ -50,6 +51,8 @@ class Player {
     this.onToast = refs.onToast || (() => {});
     this.onAnnounce = refs.onAnnounce || (() => {});
     this.onDuration = refs.onDuration || (() => {});
+    this.pdfCanvas = refs.pdfCanvas;
+    this.onPageCount = refs.onPageCount || (() => {});
 
     this._finished = true;
     this.running = false;
@@ -86,6 +89,15 @@ class Player {
     this._captionUrl = null;        // url currently owning the overlay
     this._captionText = null;       // last rendered cue text (dedupe)
     this._renderCaption('');
+    this._pdfTimer = null;
+    this._pdfDoc = null;
+    this._pdfPages = [];
+    this._pdfIdx = 0;
+    this._pdfPaused = false;
+    this._pdfArmedAt = 0;
+    this._pdfArmedMs = 0;
+    this._pdfRemaining = null;
+    if (this.pdfCanvas) this.pdfCanvas.classList.remove('is-active');
     this.videos[0].classList.add('is-active');
     this.videos[1].classList.remove('is-active');
   }
@@ -140,6 +152,9 @@ class Player {
 
     for (const v of this.videos) { try { v.pause(); } catch (_) { /* */ } }
 
+    clearTimeout(this._pdfTimer); this._pdfTimer = null;
+    if (this.pdfCanvas) this.pdfCanvas.classList.remove('is-active');
+    this._pdfDoc = null;
     const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
     if (fsEl && reason !== 'fullscreen-exit') {
       const exit = document.exitFullscreen || document.webkitExitFullscreen;
@@ -284,6 +299,13 @@ class Player {
   /** Load + duration-resolve + seek to IN + decode a frame; leaves paused at IN. */
   _prepare(v, baseIdx) {
     const entry = this.base[baseIdx];
+    if (entry.clip.kind === 'pdf') {
+      const url = entry.server ? entry.server.url : '/videos/' + encodePath(entry.name);
+      return loadDoc(url).then(({ numPages }) => {
+        if (entry.server) this.onPageCount(entry.server, numPages);
+      });
+    }
+    // ---- existing video prepare below (unchanged) ----
     const url = entry.server ? entry.server.url : '/videos/' + encodePath(entry.name);
     // Token so a superseded prepare on the SAME element (e.g. when skipping a
     // failed clip while a preload is still in flight) can't race the new one.
@@ -416,6 +438,8 @@ class Player {
   }
 
   _activate(baseIdx) {
+    if (this.base[baseIdx].clip.kind === 'pdf') { this._activatePdf(baseIdx); return; }
+    // ---- existing video activate below (unchanged) ----
     const v = this.videos[this.activeIdx];
     const old = this.videos[1 - this.activeIdx];
     const entry = this.base[baseIdx];
@@ -445,6 +469,68 @@ class Player {
     this._updateProgress();
     this._playActive(v);
     this._armWatchers(v, clip, inP, outP);
+  }
+
+  _activatePdf(baseIdx) {
+    const entry = this.base[baseIdx];
+    const clip = entry.clip;
+    this._activeClip = clip;
+
+    for (const vid of this.videos) { try { vid.pause(); } catch (_) { /* */ } vid.classList.remove('is-active'); }
+    this.pdfCanvas.classList.add('is-active');
+    this._loadCaptions({}); // PDFs have no captions; clears any leftover overlay
+
+    this.titleEl.textContent = clip.title || entry.name;
+    this.titleEl.classList.toggle('is-visible', this.overlayEnabled);
+
+    this._pdfPages = (clip.pages || []).filter((p) => clip.pageCount == null || p.page <= clip.pageCount);
+    if (!this._pdfPages.length) this._pdfPages = [{ page: 1, seconds: 6 }];
+    this._pdfIdx = 0;
+    this._pdfPaused = false;
+    this._pdfRemaining = null;
+    this._updateProgress();
+
+    const url = entry.server ? entry.server.url : '/videos/' + encodePath(entry.name);
+    loadDoc(url).then(({ doc }) => {
+      if (!this.running || this._activeClip !== clip) return;
+      this._pdfDoc = doc;
+      this._renderPdfAndArm();
+    }).catch((e) => { this._segmentDonePdfFail(baseIdx, e); });
+  }
+
+  _segmentDonePdfFail(baseIdx, e) {
+    // Mirror the video failure path so a broken PDF is skipped, not fatal.
+    if (!this.running) return;
+    this.failedBase.add(baseIdx);
+    this._recordFailure(baseIdx, e);
+    this.advance('pdf-error');
+  }
+
+  _renderPdfAndArm() {
+    const tok = ++this.activeToken; // invalidate any prior timer
+    const cur = this._pdfPages[this._pdfIdx];
+    renderPage(this._pdfDoc, cur.page, this.pdfCanvas).catch(() => {});
+    this._armPdfTimer(cur.seconds * 1000, tok);
+  }
+
+  _armPdfTimer(ms, tok) {
+    clearTimeout(this._pdfTimer);
+    this._pdfArmedAt = performance.now();
+    this._pdfArmedMs = ms;
+    this._pdfTimer = setTimeout(() => {
+      if (tok !== this.activeToken || !this.running) return;
+      this._pdfAdvancePage();
+    }, ms);
+  }
+
+  _pdfAdvancePage() {
+    if (this._pdfIdx < this._pdfPages.length - 1) {
+      this._pdfIdx++;
+      this._updateProgress();
+      this._renderPdfAndArm();
+    } else {
+      this.advance('pdf-end'); // last page -> next clip (clears the timer via _clearWatchers)
+    }
   }
 
   _playActive(v) {
@@ -515,6 +601,8 @@ class Player {
     this._rvfcVideo = null;
     clearTimeout(this._outTimer);
     this._outTimer = null;
+    clearTimeout(this._pdfTimer);
+    this._pdfTimer = null;
     if (this._onEnded) { this._onEnded.v.removeEventListener('ended', this._onEnded.fn); this._onEnded = null; }
     if (this._onTU) { this._onTU.v.removeEventListener('timeupdate', this._onTU.fn); this._onTU = null; }
   }
@@ -524,7 +612,12 @@ class Player {
     const inCycle = (this.pos % n) + 1;
     const cycle = Math.floor(this.pos / n) + 1;
     const cycleLabel = this.isLoop ? ` · cycle ${cycle}` : '';
-    const segLabel = (this._segs && this._segs.length > 1) ? ` · seg ${this._segIdx + 1}/${this._segs.length}` : '';
+    let segLabel = '';
+    if (this._activeClip && this._activeClip.kind === 'pdf') {
+      segLabel = ` · page ${this._pdfIdx + 1}/${this._pdfPages.length}`;
+    } else if (this._segs && this._segs.length > 1) {
+      segLabel = ` · seg ${this._segIdx + 1}/${this._segs.length}`;
+    }
     this.progressEl.textContent = `${inCycle} / ${n}${cycleLabel}${segLabel}`;
   }
 
@@ -654,6 +747,17 @@ class Player {
         break;
       case ' ': case 'Spacebar':
         e.preventDefault();
+        if (this._activeClip && this._activeClip.kind === 'pdf') {
+          if (this._pdfPaused) {
+            this._pdfPaused = false;
+            this._armPdfTimer(this._pdfRemaining != null ? this._pdfRemaining : this._pdfPages[this._pdfIdx].seconds * 1000, this.activeToken);
+          } else {
+            this._pdfPaused = true;
+            clearTimeout(this._pdfTimer); this._pdfTimer = null;
+            this._pdfRemaining = Math.max(0, this._pdfArmedMs - (performance.now() - this._pdfArmedAt));
+          }
+          break;
+        }
         if (v.paused) { v.play().catch(() => {}); this._armOutTimer(v, this._outP); }
         else { v.pause(); clearTimeout(this._outTimer); this._outTimer = null; }
         break;
@@ -663,18 +767,31 @@ class Player {
         break;
       case 'ArrowLeft':
         e.preventDefault();
+        if (this._activeClip && this._activeClip.kind === 'pdf') {
+          this._clearWatchers();
+          this._pdfIdx = 0;
+          this._pdfPaused = false;
+          this._pdfRemaining = null;
+          if (this.overlayEnabled) { this.titleEl.textContent = this._activeClip.title || ''; this.titleEl.classList.add('is-visible'); }
+          this._updateProgress();
+          this._renderPdfAndArm();
+          break;
+        }
         this._restartCurrent();
         break;
       case 'ArrowUp':
         e.preventDefault();
+        if (this._activeClip && this._activeClip.kind === 'pdf') { e.preventDefault(); break; }
         this._setVolume(0.1);
         break;
       case 'ArrowDown':
         e.preventDefault();
+        if (this._activeClip && this._activeClip.kind === 'pdf') { e.preventDefault(); break; }
         this._setVolume(-0.1);
         break;
       case 'm': case 'M':
         e.preventDefault();
+        if (this._activeClip && this._activeClip.kind === 'pdf') { e.preventDefault(); break; }
         this.muted = !this.muted;
         v.muted = this.muted;
         break;
