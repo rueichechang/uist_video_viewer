@@ -46,6 +46,14 @@ A clip's identity is its path relative to `videos/` (e.g.
 different folders never collide. The library title/ID is derived from just the
 filename. Files placed directly in `videos/` still work (no subfolder needed).
 
+### PDF-only submissions
+
+A submission that has a **PDF but no video** still appears in the Library (under
+a **PDFs** section) and plays in the showreel as a timed slideshow: by default
+the **first 10 pages, 6 seconds each** (clamped to the PDF's length). Select it
+to choose exactly which pages to show and set each page's own duration. PDFs are
+rendered with a bundled copy of Mozilla PDF.js — no internet needed.
+
 ### Captions
 
 Drop a sidecar caption file (`.srt`, `.vtt`, or `.txt` in SRT/WebVTT/SBV format)
@@ -106,6 +114,8 @@ found anywhere under `videos/`:
 
 ## Notes & limits
 
+- **PDF clips** have no audio or captions; during playback `Space` pauses the
+  page timer, `←` restarts at the first page, and `→` skips to the next clip.
 - **Where data lives:** titles, trims (one or more start/end segments per clip)
   and options are saved in your browser's `localStorage` (with a `.bak` copy),
   written after every edit and flushed when the tab closes. Use **Export** to
