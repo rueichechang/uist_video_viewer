@@ -11,6 +11,9 @@ import {
   titleFromName, idFromName, canBrowserPlay, el, $, $all,
 } from './util.js';
 
+const DEFAULT_PDF_PAGE_SECONDS = 6;
+const MIN_PDF_PAGE_SECONDS = 0.5;
+
 /** Resolve a video element's duration, probing the Infinity case. */
 function resolveVideoDuration(v) {
   return new Promise((resolve) => {
@@ -57,6 +60,7 @@ class UI {
     this._bindOptions();
     this._bindAuthoring();
     this._bindConfigButtons();
+    this._bindPdfEditor();
     this.r.playBtn.addEventListener('click', () => this.onPlay());
     this.r.reloadBtn.addEventListener('click', () => this.onReload());
     this.r.forgetMissingBtn?.addEventListener('click', () => this._confirmForgetMissing());
@@ -301,6 +305,7 @@ class UI {
   select(name) {
     this.selected = name;
     this.selSeg = 0;
+    this._pdfPreviewPage = 1;
     for (const c of $all('.lib-card', this.r.libraryList)) {
       c.setAttribute('aria-selected', c.dataset.name === name ? 'true' : 'false');
     }
@@ -312,10 +317,16 @@ class UI {
     const name = this.selected;
     const clip = name ? store.getClip(name) : null;
     const sv = name ? this.serverEntry(name) : null;
+    const isPdf = !!(clip && clip.kind === 'pdf');
+
     this.r.authoringEmpty.hidden = !!clip;
-    this.r.authoringEditor.hidden = !clip;
+    this.r.authoringEditor.hidden = !clip || isPdf;
+    if (this.r.pdfEditor) this.r.pdfEditor.hidden = !isPdf;
     if (!clip) return;
 
+    if (isPdf) { this._renderPdfEditor(clip, sv, name); return; }
+
+    // ---- existing video editor path (unchanged) ----
     const prev = this.r.previewVideo;
     const missing = clip.missing || !sv;
     if (missing) {
@@ -325,11 +336,123 @@ class UI {
     } else {
       this._loadPreview(prev, sv, clip, name);
     }
-
     this.r.titleInput.value = clip.title || '';
     this.r.enabledInput.checked = clip.enabled !== false;
     this.r.forgetBtn.hidden = !clip.missing;
     this._syncEditor();
+  }
+
+  _renderPdfEditor(clip, sv, name) {
+    const r = this.r;
+    r.pdfTitleInput.value = clip.title || '';
+    r.pdfTitleError.hidden = !!(clip.title && clip.title.trim());
+    r.pdfEnabledInput.checked = clip.enabled !== false;
+    r.pdfForgetBtn.hidden = !clip.missing;
+    // Clamp the preview page to a page that's in the clip's list.
+    const pages = clip.pages || [];
+    if (!pages.some((p) => p.page === this._pdfPreviewPage)) {
+      this._pdfPreviewPage = pages.length ? pages[0].page : 1;
+    }
+    this._renderPdfPageList(clip);
+    this._renderPdfPreview();
+  }
+
+  _renderPdfPageList(clip) {
+    const list = this.r.pdfPageList;
+    list.textContent = '';
+    const pages = clip.pages || [];
+    this.r.pdfPageReadout.textContent = clip.pageCount != null
+      ? `page ${this._pdfPreviewPage} of ${clip.pageCount}`
+      : `page ${this._pdfPreviewPage}`;
+    for (const p of pages) {
+      const row = el('li', {
+        class: `seg-row${p.page === this._pdfPreviewPage ? ' is-selected' : ''}`,
+        dataset: { page: String(p.page) },
+      });
+      row.append(el('span', { class: 'seg-row__label', text: `Page ${p.page}` }));
+      const ctrls = el('span', { class: 'seg-row__ctrls' });
+      const sec = el('input', {
+        class: 'field__input field__input--num seg-row__seconds',
+        type: 'number', min: String(MIN_PDF_PAGE_SECONDS), step: '0.5',
+        value: String(p.seconds), 'aria-label': `Seconds for page ${p.page}`,
+        dataset: { act: 'seconds', page: String(p.page) },
+      });
+      ctrls.append(sec, el('span', { class: 'muted', text: 's' }),
+        el('button', { class: 'btn btn--ghost btn--sm', type: 'button', text: '✕',
+          'aria-label': `Remove page ${p.page}`, dataset: { act: 'del' } }));
+      row.append(ctrls);
+      list.append(row);
+    }
+  }
+
+  _renderPdfPreview() {
+    const clip = store.getClip(this.selected);
+    const sv = this.serverEntry(this.selected);
+    if (!clip || clip.kind !== 'pdf' || !sv) return;
+    loadDoc(sv.url)
+      .then(({ doc, numPages }) => {
+        if (clip.pageCount == null) store.setPageCount(sv, numPages); // resolves count once
+        const page = clamp(this._pdfPreviewPage, 1, numPages);
+        this._pdfPreviewPage = page;
+        return renderPage(doc, page, this.r.pdfPreviewCanvas, { maxDim: 1000 });
+      })
+      .then(() => { this.r.pdfPageReadout.textContent = `page ${this._pdfPreviewPage}${clip.pageCount != null ? ` of ${clip.pageCount}` : ''}`; })
+      .catch(() => { /* broken PDF: leave the canvas as-is */ });
+  }
+
+  _stepPdfPreview(dir) {
+    const clip = store.getClip(this.selected);
+    if (!clip) return;
+    const max = clip.pageCount != null ? clip.pageCount : this._pdfPreviewPage + 1;
+    this._pdfPreviewPage = clamp(this._pdfPreviewPage + dir, 1, max);
+    this._renderPdfPreview();
+    this._markPdfRowSelected(this._pdfPreviewPage);
+  }
+
+  _markPdfRowSelected(page) {
+    for (const row of $all('.seg-row', this.r.pdfPageList)) {
+      row.classList.toggle('is-selected', Number(row.dataset.page) === page);
+    }
+  }
+
+  /** Write a new page list (ascending, de-duped) back to the store. */
+  _commitPdfPages(name, pages) {
+    const seen = new Set();
+    const clean = pages
+      .map((p) => ({ page: Math.max(1, Math.round(p.page)), seconds: Math.max(MIN_PDF_PAGE_SECONDS, round3(p.seconds)) }))
+      .sort((a, b) => a.page - b.page)
+      .filter((p) => (seen.has(p.page) ? false : (seen.add(p.page), true)));
+    store.updateClip(name, { pages: clean });
+    this.renderAuthoring();
+    this.renderCard(name);
+    this.updatePlayState();
+    this._flashSaved();
+  }
+
+  _setPdfPageSeconds(page, raw) {
+    const clip = store.getClip(this.selected);
+    if (!clip) return;
+    const seconds = Number(raw);
+    if (!Number.isFinite(seconds) || seconds < MIN_PDF_PAGE_SECONDS) { this.renderAuthoring(); return; }
+    this._commitPdfPages(this.selected, clip.pages.map((p) => p.page === page ? { ...p, seconds } : p));
+  }
+
+  _removePdfPage(page) {
+    const clip = store.getClip(this.selected);
+    if (!clip || clip.pages.length <= 1) return; // keep at least one page
+    this._commitPdfPages(this.selected, clip.pages.filter((p) => p.page !== page));
+  }
+
+  _addPdfPage() {
+    const clip = store.getClip(this.selected);
+    if (!clip) return;
+    const used = new Set(clip.pages.map((p) => p.page));
+    const max = clip.pageCount != null ? clip.pageCount : Infinity;
+    let next = 1;
+    while (used.has(next) && next <= max) next++;
+    if (next > max) { this.toast('All pages are already in the slideshow.', 'warn'); return; }
+    this._pdfPreviewPage = next;
+    this._commitPdfPages(this.selected, [...clip.pages, { page: next, seconds: DEFAULT_PDF_PAGE_SECONDS }]);
   }
 
   /** (Re)load the preview <video> for a clip, with robust metadata handling. */
@@ -484,6 +607,56 @@ class UI {
       );
       row.append(ctrls);
       list.append(row);
+    });
+  }
+
+  _bindPdfEditor() {
+    const r = this.r;
+    if (!r.pdfEditor) return;
+    this._pdfPreviewPage = 1;
+
+    r.pdfTitleInput.addEventListener('input', () => {
+      if (!this.selected) return;
+      this._saveTitle(this.selected, r.pdfTitleInput.value);
+      const clip = store.getClip(this.selected);
+      r.pdfTitleError.hidden = !(clip && (!r.pdfTitleInput.value || !r.pdfTitleInput.value.trim()));
+    });
+
+    r.pdfEnabledInput.addEventListener('change', () => {
+      if (!this.selected) return;
+      store.updateClip(this.selected, { enabled: r.pdfEnabledInput.checked });
+      this.renderCard(this.selected);
+      this.updatePlayState();
+      this._flashSaved();
+    });
+
+    r.pdfPrevPageBtn.addEventListener('click', () => this._stepPdfPreview(-1));
+    r.pdfNextPageBtn.addEventListener('click', () => this._stepPdfPreview(1));
+    r.pdfAddPageBtn.addEventListener('click', () => this._addPdfPage());
+
+    r.pdfPageList.addEventListener('click', (e) => {
+      const row = e.target.closest('.seg-row');
+      if (!row) return;
+      const page = Number(row.dataset.page);
+      if (e.target.closest('button[data-act="del"]')) { this._removePdfPage(page); return; }
+      this._pdfPreviewPage = page;
+      this._renderPdfPreview();
+      this._markPdfRowSelected(page);
+    });
+    r.pdfPageList.addEventListener('change', (e) => {
+      const input = e.target.closest('input[data-act="seconds"]');
+      if (!input) return;
+      this._setPdfPageSeconds(Number(input.dataset.page), input.value);
+    });
+
+    r.pdfForgetBtn.addEventListener('click', () => {
+      const name = this.selected;
+      if (!name) return;
+      store.forgetClip(name);
+      this.selected = null;
+      this.refreshAll();
+      this._flashSaved();
+      this.toast(`Forgot "${name}".`);
     });
   }
 
