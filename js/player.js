@@ -440,6 +440,7 @@ class Player {
   _activate(baseIdx) {
     if (this.base[baseIdx].clip.kind === 'pdf') { this._activatePdf(baseIdx); return; }
     // ---- existing video activate below (unchanged) ----
+    if (this.pdfCanvas) this.pdfCanvas.classList.remove('is-active');
     const v = this.videos[this.activeIdx];
     const old = this.videos[1 - this.activeIdx];
     const entry = this.base[baseIdx];

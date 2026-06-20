@@ -197,7 +197,7 @@ class UI {
     const validity = store.clipValidity(clip, sv);
     if (clip.missing) { add('badge--bad', '⚠ Missing'); return wrap; }
     if (clip.kind === 'pdf') add('badge--pdf', 'PDF');
-    if (sv && sv.unplayable) add('badge--bad', '⚠ Unsupported');
+    if (clip.kind !== 'pdf' && sv && sv.unplayable) add('badge--bad', '⚠ Unsupported');
     if (!clip.title || !clip.title.trim()) add('badge--warn', '⚠ Needs title');
     if (clip.changed) add('badge--warn', '↻ File changed');
     if (!clip.enabled) add('badge--off', 'Excluded');
