@@ -229,12 +229,14 @@ class UI {
           if (!it.isIntersecting) continue;
           const cv = it.target;
           this._pdfThumbObserver.unobserve(cv);
-          loadDoc(sv.url)
+          if (!cv.dataset.src) continue;
+          loadDoc(cv.dataset.src)
             .then(({ doc }) => renderPage(doc, 1, cv, { maxDim: 400 }))
             .catch(() => { /* a broken PDF just shows blank */ });
         }
       }, { rootMargin: '200px' });
     }
+    canvas.dataset.src = sv.url;
     this._pdfThumbObserver.observe(canvas);
   }
 
