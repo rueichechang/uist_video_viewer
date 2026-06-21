@@ -101,6 +101,8 @@ class Player {
     this._pdfRemaining = null;
     this._resumeSpot = null;
     if (this.pdfCanvas) this.pdfCanvas.classList.remove('is-active');
+    this.theater = false;
+    this.container.classList.remove('player--theater');
     this.videos[0].classList.add('is-active');
     this.videos[1].classList.remove('is-active');
   }
@@ -115,6 +117,7 @@ class Player {
     this.overlayEnabled = !!options.titleOverlayEnabled;
     this.muted = !!options.startMuted;
     this.volume = 1;
+    this.theater = !!options.theater;
     this.running = true;
     if (plan && Array.isArray(plan.order) && plan.order.length) {
       this.sequence = plan.order.slice();
@@ -132,7 +135,8 @@ class Player {
     this._bindFullscreenWatch();
     this._bindKeys();
     this._showHint();
-    this._requestFs(); // must be synchronous within the gesture
+    if (this.theater) this.container.classList.add('player--theater');
+    else this._requestFs(); // must be synchronous within the gesture
 
     // Async from here (muted autoplay needs no transient activation).
     const first = this.sequence[this.pos];
@@ -166,6 +170,7 @@ class Player {
 
     clearTimeout(this._pdfTimer); this._pdfTimer = null;
     if (this.pdfCanvas) this.pdfCanvas.classList.remove('is-active');
+    this.container.classList.remove('player--theater');
     this._pdfDoc = null;
     const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
     if (fsEl && reason !== 'fullscreen-exit') {
@@ -233,6 +238,34 @@ class Player {
     } else {
       this.finish('exit');
     }
+  }
+
+  /** Theater: jump playback to a specific clip (clicked in the visible sidebar). */
+  jumpTo(name) {
+    if (!this.running || this.transitionInProgress) return;
+    const baseIdx = this.base.findIndex((e) => e.name === name);
+    if (baseIdx < 0 || this.failedBase.has(baseIdx)) return;
+    // Find it in the sequence at/after pos, else anywhere, else insert after pos.
+    let p = this.sequence.indexOf(baseIdx, this.pos);
+    if (p < 0) p = this.sequence.indexOf(baseIdx);
+    if (p < 0) { this.sequence.splice(this.pos + 1, 0, baseIdx); p = this.pos + 1; }
+    this.transitionInProgress = true;
+    this._clearWatchers();
+    const standby = this.videos[1 - this.activeIdx];
+    this._prepare(standby, baseIdx)
+      .then(() => {
+        if (!this.running) return;
+        this.pos = p;
+        this.activeIdx = 1 - this.activeIdx;
+        this._activate(baseIdx);
+        this.transitionInProgress = false;
+        this._preloadNext();
+      })
+      .catch((e) => {
+        this.failedBase.add(baseIdx);
+        this._recordFailure(baseIdx, e);
+        this.transitionInProgress = false;
+      });
   }
 
   // ===================== sequence =====================
@@ -853,7 +886,7 @@ class Player {
         break;
       case 'f': case 'F':
         e.preventDefault();
-        if (!(document.fullscreenElement || document.webkitFullscreenElement)) this._requestFs();
+        if (!this.theater && !(document.fullscreenElement || document.webkitFullscreenElement)) this._requestFs();
         break;
       default:
         break;
