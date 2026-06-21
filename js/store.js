@@ -14,6 +14,7 @@ const CONFIG_KEY = 'showreel.config.v1';
 const BAK_KEY = 'showreel.config.v1.bak';
 const DUR_KEY = 'showreel.durations.v1';
 const PAGES_KEY = 'showreel.pagecounts.v1';
+const RESUME_KEY = 'showreel.resume.v1';
 // Previous key names (app was called "marquee"); migrated on first load.
 const LEGACY = { config: 'marquee.config.v1', bak: 'marquee.config.v1.bak', dur: 'marquee.durations.v1' };
 // v1 stored a single flat trim (in/out/outIsEnd) per clip; v2 stores a
@@ -433,6 +434,53 @@ class Store extends EventTarget {
       this.persist();
     }
     this.emit('pagecount', { name: v.name, pageCount: n });
+  }
+
+  // ---- resume (playback position) ------------------------------------
+  getResume() {
+    try {
+      const raw = localStorage.getItem(RESUME_KEY);
+      if (!raw) return null;
+      const r = JSON.parse(raw);
+      return (r && typeof r === 'object' && typeof r.name === 'string') ? r : null;
+    } catch (_) { return null; }
+  }
+
+  setResume(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return;
+    try { localStorage.setItem(RESUME_KEY, JSON.stringify(snapshot)); } catch (_) { /* ignore */ }
+  }
+
+  clearResume() {
+    try { localStorage.removeItem(RESUME_KEY); } catch (_) { /* ignore */ }
+  }
+
+  /**
+   * Resolve a saved snapshot against the current playlist (array of
+   * {name, clip, server}). Returns a play plan or null when the active clip is
+   * no longer playable (caller starts fresh). `order` maps snapshot.order names
+   * -> indices into `playlist` (missing names dropped, order preserved); `pos`
+   * is the active clip's index within that mapped order.
+   */
+  resolveResume(snapshot, playlist) {
+    if (!snapshot || !Array.isArray(playlist) || !playlist.length) return null;
+    const idxByName = new Map(playlist.map((e, i) => [e.name, i]));
+    const names = Array.isArray(snapshot.order) ? snapshot.order : [];
+    const order = names.map((nm) => idxByName.get(nm)).filter((i) => i != null);
+    const activeIdx = idxByName.get(snapshot.name);
+    if (activeIdx == null) return null;          // active clip gone -> fresh start
+    const pos = order.indexOf(activeIdx);
+    if (pos < 0) return null;
+    return {
+      order,
+      pos,
+      name: snapshot.name,
+      kind: snapshot.kind === 'pdf' ? 'pdf' : 'video',
+      segIdx: Number.isFinite(snapshot.segIdx) ? snapshot.segIdx : 0,
+      time: Number.isFinite(snapshot.time) ? snapshot.time : 0,
+      pageIdx: Number.isFinite(snapshot.pageIdx) ? snapshot.pageIdx : 0,
+      mode: typeof snapshot.mode === 'string' ? snapshot.mode : 'sequential-loop',
+    };
   }
 
   // ---- validity --------------------------------------------------------
