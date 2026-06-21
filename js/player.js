@@ -53,6 +53,8 @@ class Player {
     this.onDuration = refs.onDuration || (() => {});
     this.pdfCanvas = refs.pdfCanvas;
     this.onPageCount = refs.onPageCount || (() => {});
+    this.onSaveResume = refs.onSaveResume || (() => {});
+    this.onClearResume = refs.onClearResume || (() => {});
 
     this._finished = true;
     this.running = false;
@@ -97,6 +99,7 @@ class Player {
     this._pdfArmedAt = 0;
     this._pdfArmedMs = 0;
     this._pdfRemaining = null;
+    this._resumeSpot = null;
     if (this.pdfCanvas) this.pdfCanvas.classList.remove('is-active');
     this.videos[0].classList.add('is-active');
     this.videos[1].classList.remove('is-active');
@@ -104,17 +107,24 @@ class Player {
 
   // ===================== lifecycle =====================
   /** Called synchronously from the Play click. `playlist` is pre-validated. */
-  start(playlist, options) {
+  start(playlist, options, plan) {
     this.reset();
     this.base = playlist;
-    this.mode = options.mode;
+    this.mode = (plan && plan.mode) || options.mode;
     this.isLoop = this.mode.endsWith('loop');
     this.overlayEnabled = !!options.titleOverlayEnabled;
     this.muted = !!options.startMuted;
     this.volume = 1;
     this.running = true;
-    this.sequence = this._buildBlock();
-    this.pos = 0;
+    if (plan && Array.isArray(plan.order) && plan.order.length) {
+      this.sequence = plan.order.slice();
+      this.pos = clamp(plan.pos || 0, 0, this.sequence.length - 1);
+      this._resumeSpot = { kind: plan.kind, segIdx: plan.segIdx, time: plan.time, pageIdx: plan.pageIdx };
+    } else {
+      this.sequence = this._buildBlock();
+      this.pos = 0;
+      this._resumeSpot = null;
+    }
 
     this.container.hidden = false;
     this.container.focus();
@@ -125,7 +135,7 @@ class Player {
     this._requestFs(); // must be synchronous within the gesture
 
     // Async from here (muted autoplay needs no transient activation).
-    const first = this.sequence[0];
+    const first = this.sequence[this.pos];
     this._prepare(this.videos[this.activeIdx], first)
       .then(() => {
         if (!this.running) return;
@@ -144,6 +154,8 @@ class Player {
 
   finish(reason) {
     if (this._finished) return;
+    if (reason === 'end' || reason === 'all-failed') this.onClearResume();
+    else this.onSaveResume(this.getResumeSnapshot()); // capture exact spot before teardown
     this._finished = true;
     this.running = false;
     this._clearWatchers();
@@ -184,6 +196,32 @@ class Player {
       failed: this.failed.slice(),
       total: this.base.length,
     });
+  }
+
+  /** Snapshot of the current position for resume (or null when not playable). */
+  getResumeSnapshot() {
+    if (!this.base || !this.base.length) return null;
+    const n = this.base.length;
+    const cycleStart = this.pos - (this.pos % n);
+    const order = [];
+    for (let i = cycleStart; i < cycleStart + n && i < this.sequence.length; i++) {
+      const e = this.base[this.sequence[i]];
+      if (e) order.push(e.name);
+    }
+    const active = this.base[this.sequence[this.pos]];
+    if (!active) return null;
+    const isPdf = active.clip.kind === 'pdf';
+    const v = this.videos[this.activeIdx];
+    return {
+      order,
+      name: active.name,
+      kind: isPdf ? 'pdf' : 'video',
+      segIdx: isPdf ? 0 : (this._segIdx || 0),
+      time: isPdf ? 0 : (Number.isFinite(v.currentTime) ? v.currentTime : 0),
+      pageIdx: isPdf ? (this._pdfIdx || 0) : 0,
+      mode: this.mode,
+      savedAt: new Date().toISOString(),
+    };
   }
 
   requestStop() {
@@ -448,7 +486,16 @@ class Player {
     const dur = Number.isFinite(v.duration) ? v.duration : null;
     this._segs = this._segments(clip, dur);
     this._segIdx = 0;
-    const seg0 = this._segs[0];
+    // Resume: jump to the saved segment + timestamp on the FIRST activation only.
+    let startAt = null;
+    if (this._resumeSpot && this._resumeSpot.kind === 'video') {
+      this._segIdx = clamp(this._resumeSpot.segIdx || 0, 0, this._segs.length - 1);
+      const rs = this._segs[this._segIdx];
+      const hi = rs.outP != null ? rs.outP - EPS : (dur != null ? dur : (this._resumeSpot.time || 0));
+      startAt = clamp(this._resumeSpot.time || 0, rs.inP, Math.max(rs.inP, hi));
+    }
+    this._resumeSpot = null;
+    const seg0 = this._segs[this._segIdx];
     const inP = seg0.inP;
     const outP = seg0.outP;
     this._inP = inP;
@@ -468,8 +515,10 @@ class Player {
     this.titleEl.classList.toggle('is-visible', this.overlayEnabled);
 
     this._updateProgress();
+    if (startAt != null) { try { v.currentTime = startAt; } catch (_) { /* */ } }
     this._playActive(v);
     this._armWatchers(v, clip, inP, outP);
+    this.onSaveResume(this.getResumeSnapshot());
   }
 
   _activatePdf(baseIdx) {
@@ -487,9 +536,14 @@ class Player {
     this._pdfPages = (clip.pages || []).filter((p) => clip.pageCount == null || p.page <= clip.pageCount);
     if (!this._pdfPages.length) this._pdfPages = [{ page: 1, seconds: 6 }];
     this._pdfIdx = 0;
+    if (this._resumeSpot && this._resumeSpot.kind === 'pdf') {
+      this._pdfIdx = clamp(this._resumeSpot.pageIdx || 0, 0, this._pdfPages.length - 1);
+    }
+    this._resumeSpot = null;
     this._pdfPaused = false;
     this._pdfRemaining = null;
     this._updateProgress();
+    this.onSaveResume(this.getResumeSnapshot());
 
     const url = entry.server ? entry.server.url : '/videos/' + encodePath(entry.name);
     loadDoc(url).then(({ doc }) => {
@@ -756,11 +810,12 @@ class Player {
             this._pdfPaused = true;
             clearTimeout(this._pdfTimer); this._pdfTimer = null;
             this._pdfRemaining = Math.max(0, this._pdfArmedMs - (performance.now() - this._pdfArmedAt));
+            this.onSaveResume(this.getResumeSnapshot());
           }
           break;
         }
         if (v.paused) { v.play().catch(() => {}); this._armOutTimer(v, this._outP); }
-        else { v.pause(); clearTimeout(this._outTimer); this._outTimer = null; }
+        else { v.pause(); clearTimeout(this._outTimer); this._outTimer = null; this.onSaveResume(this.getResumeSnapshot()); }
         break;
       case 'ArrowRight':
         e.preventDefault();
