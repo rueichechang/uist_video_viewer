@@ -78,7 +78,11 @@ reordered segments.
    order, back-to-back, before the showreel advances to the next clip.
 3. **Options** (right) — playback mode, a toggle for the title headline,
    start-muted, and JSON **Export / Import** of your whole configuration.
-4. **▶ Play fullscreen** (top right) — runs the showreel.
+4. **▶ Play fullscreen** (top right) — runs the showreel in true fullscreen.
+   **▶ Play with sidebar** runs it in an in-app theater view that keeps the
+   Library visible on the left; click any Library card to jump playback to it.
+   Both buttons **resume** from where you last left off (the exact video time /
+   PDF page, saved across reloads); **↺ Start over** clears that resume point.
 
 ### Playback modes
 
