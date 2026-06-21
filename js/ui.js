@@ -266,7 +266,12 @@ class UI {
   }
 
   _cardKey(e, name) {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.select(name); return; }
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (this.onJump && this.onJump(name)) return;
+      this.select(name);
+      return;
+    }
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       const cards = $all('.lib-card', this.r.libraryList);

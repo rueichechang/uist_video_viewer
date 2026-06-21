@@ -67,6 +67,8 @@ class Player {
   reset() {
     this._finished = false;
     this.running = false;
+    this.usedFullscreen = false;
+    this._inertEls = null;
     this.base = [];
     this.sequence = [];
     this.pos = 0;
@@ -138,13 +140,17 @@ class Player {
     if (this.theater) this.container.classList.add('player--theater');
     else this._requestFs(); // must be synchronous within the gesture
 
-    // Async from here (muted autoplay needs no transient activation).
+    // Async from here (muted autoplay needs no transient activation). Hold the
+    // transition lock across the initial prepare so an early skip/jump can't
+    // race the first activation.
     const first = this.sequence[this.pos];
+    this.transitionInProgress = true;
     this._prepare(this.videos[this.activeIdx], first)
       .then(() => {
         if (!this.running) return;
         this._activate(first);
         this.playedOk++;
+        this.transitionInProgress = false;
         this._preloadNext();
       })
       .catch((e) => {
@@ -242,9 +248,9 @@ class Player {
 
   /** Theater: jump playback to a specific clip (clicked in the visible sidebar). */
   jumpTo(name) {
-    if (!this.running || this.transitionInProgress) return;
+    if (!this.running || this.transitionInProgress) return false;
     const baseIdx = this.base.findIndex((e) => e.name === name);
-    if (baseIdx < 0 || this.failedBase.has(baseIdx)) return;
+    if (baseIdx < 0 || this.failedBase.has(baseIdx)) return false;
     // Find it in the sequence at/after pos, else anywhere, else insert after pos.
     let p = this.sequence.indexOf(baseIdx, this.pos);
     if (p < 0) p = this.sequence.indexOf(baseIdx);
@@ -258,6 +264,7 @@ class Player {
         this.pos = p;
         this.activeIdx = 1 - this.activeIdx;
         this._activate(baseIdx);
+        this.playedOk++;
         this.transitionInProgress = false;
         this._preloadNext();
       })
@@ -266,6 +273,7 @@ class Player {
         this._recordFailure(baseIdx, e);
         this.transitionInProgress = false;
       });
+    return true;
   }
 
   // ===================== sequence =====================
@@ -924,9 +932,24 @@ class Player {
 
   _setShellInert(on) {
     if (!this.shell) return;
-    try { this.shell.inert = on; } catch (_) { /* */ }
-    if (on) this.shell.setAttribute('aria-hidden', 'true');
-    else this.shell.removeAttribute('aria-hidden');
+    if (on) {
+      // Fullscreen blocks the whole shell; theater keeps the Library interactive
+      // (click-to-jump) and inerts only the panes the overlay covers + the appbar.
+      const targets = this.theater
+        ? Array.from(this.shell.querySelectorAll('.pane:not(.pane--library), .appbar'))
+        : [this.shell];
+      this._inertEls = targets;
+      for (const el of targets) {
+        try { el.inert = true; } catch (_) { /* */ }
+        el.setAttribute('aria-hidden', 'true');
+      }
+    } else {
+      for (const el of (this._inertEls || [])) {
+        try { el.inert = false; } catch (_) { /* */ }
+        el.removeAttribute('aria-hidden');
+      }
+      this._inertEls = null;
+    }
   }
 }
 

@@ -155,10 +155,7 @@ function init() {
     onPlay: () => startPlayback(false),
     onPlayTheater: () => startPlayback(true),
     onReload: loadLibrary,
-    onJump: (name) => {
-      if (player.running && player.theater) { player.jumpTo(name); return true; }
-      return false;
-    },
+    onJump: (name) => (player.running && player.theater) ? player.jumpTo(name) : false,
     onStartOver: () => { store.clearResume(); ui.refreshPlayControls(); },
   });
   ui.refreshPlayControls();
