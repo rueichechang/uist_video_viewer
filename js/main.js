@@ -14,6 +14,8 @@ const refs = {
   savedIndicator: byId('savedIndicator'),
   sessionSummary: byId('sessionSummary'),
   reloadBtn: byId('reloadBtn'),
+  playSidebarBtn: byId('playSidebarBtn'),
+  startOverBtn: byId('startOverBtn'),
 
   // library
   libraryList: byId('libraryList'),
@@ -86,11 +88,14 @@ const refs = {
   modalRoot: byId('modalRoot'),
 };
 
-function startPlayback() {
+function startPlayback(theater) {
   const playlist = ui.buildPlaylist();
   if (!playlist.length) return;
+  const snap = store.getResume();
+  const plan = snap ? store.resolveResume(snap, playlist) : null;
+  if (snap && !plan) ui.toast("Couldn't resume — starting over.", 'warn');
   // Synchronous within the click gesture so fullscreen is granted.
-  player.start(playlist, { ...store.options });
+  player.start(playlist, { ...store.options, theater: !!theater }, plan);
 }
 
 async function loadLibrary() {
@@ -128,7 +133,7 @@ function init() {
     controlHint: refs.controlHint,
     exitBtn: refs.exitBtn,
     shell: refs.shell,
-    onStop: (summary) => { ui.showSummary(summary); refs.playBtn.focus(); },
+    onStop: (summary) => { ui.showSummary(summary); ui.refreshPlayControls(); refs.playBtn.focus(); },
     onToast: (m, k) => ui.toast(m, k),
     onAnnounce: (m) => ui.announce(m),
     onDuration: (sv, dur) => {
@@ -142,9 +147,21 @@ function init() {
       ui.renderCard(sv.name);
       if (ui.selected === sv.name) ui.renderAuthoring();
     },
+    onSaveResume: (snap) => store.setResume(snap),
+    onClearResume: () => store.clearResume(),
   });
 
-  ui.init(refs, { onPlay: startPlayback, onReload: loadLibrary });
+  ui.init(refs, {
+    onPlay: () => startPlayback(false),
+    onPlayTheater: () => startPlayback(true),
+    onReload: loadLibrary,
+    onJump: (name) => {
+      if (player.running && player.theater) { player.jumpTo(name); return true; }
+      return false;
+    },
+    onStartOver: () => { store.clearResume(); ui.refreshPlayControls(); },
+  });
+  ui.refreshPlayControls();
   ui._syncOptionInputs();
 
   store.on('storage-error', () =>
@@ -153,10 +170,13 @@ function init() {
   // Config is autosaved after every edit, but on a 300ms debounce. Force any
   // pending write out when the tab is hidden or closing so the last edit (e.g.
   // a quick segment tweak right before navigating away) is never lost.
-  const flushNow = () => store.flush();
+  const flushNow = () => {
+    store.flush();
+    if (player.running) store.setResume(player.getResumeSnapshot());
+  };
   window.addEventListener('pagehide', flushNow);
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') store.flush();
+    if (document.visibilityState === 'hidden') flushNow();
   });
 
   // Another tab edited the same config: warn rather than silently clobber.

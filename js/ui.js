@@ -45,7 +45,10 @@ class UI {
   init(refs, handlers) {
     this.r = refs;
     this.onPlay = handlers.onPlay;
+    this.onPlayTheater = handlers.onPlayTheater;
     this.onReload = handlers.onReload;
+    this.onJump = handlers.onJump;
+    this.onStartOver = handlers.onStartOver;
     this.selected = null;
     this.selSeg = 0; // index of the segment the trim controls are editing
     this.activePane = 'library';
@@ -62,6 +65,8 @@ class UI {
     this._bindConfigButtons();
     this._bindPdfEditor();
     this.r.playBtn.addEventListener('click', () => this.onPlay());
+    this.r.playSidebarBtn?.addEventListener('click', () => this.onPlayTheater && this.onPlayTheater());
+    this.r.startOverBtn?.addEventListener('click', () => this.onStartOver && this.onStartOver());
     this.r.reloadBtn.addEventListener('click', () => this.onReload());
     this.r.forgetMissingBtn?.addEventListener('click', () => this._confirmForgetMissing());
     this.r.libraryEmpty.querySelector('[data-action="reload"]')
@@ -160,7 +165,10 @@ class UI {
     body.append(this._badges(name, clip, sv));
 
     card.append(thumb, body);
-    card.addEventListener('click', () => this.select(name));
+    card.addEventListener('click', () => {
+      if (this.onJump && this.onJump(name)) return; // theater: jump playback
+      this.select(name);
+    });
     card.addEventListener('keydown', (e) => this._cardKey(e, name));
     return card;
   }
@@ -984,6 +992,8 @@ class UI {
     const playlist = this.buildPlaylist();
     const ready = playlist.length > 0;
     this.r.playBtn.disabled = !ready;
+    if (this.r.playSidebarBtn) this.r.playSidebarBtn.disabled = !ready;
+    this.refreshPlayControls();
 
     if (ready) {
       const total = playlist.reduce((s, x) => s + (store.trimmedLength(x.clip) || 0), 0);
@@ -994,6 +1004,11 @@ class UI {
       this.r.sessionSummary.textContent = '';
       this.r.playBlockers.textContent = this._blockerSummary();
     }
+  }
+
+  /** Show the Start-over control only when a resume snapshot exists. */
+  refreshPlayControls() {
+    if (this.r.startOverBtn) this.r.startOverBtn.hidden = !store.getResume();
   }
 
   _blockerSummary() {
