@@ -15,12 +15,13 @@
 //   * fullscreenchange is the SOLE authority for "stopped" on Esc, so the app's
 //     own key handler never races the browser's auto-exit.
 
-import { MIN_CLIP, clamp, shuffle, parseCaptions, encodePath } from './util.js';
+import { MIN_CLIP, clamp, shuffle, parseCaptions, encodePath, formatShort } from './util.js';
 import { loadDoc, renderPage } from './pdf.js';
 
 const EPS = 0.02;          // ~half a frame at 30fps
 const PREP_TIMEOUT = 15000;
 const HINT_HIDE_MS = 2600;
+const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];  // selectable playback rates
 
 const HAS_RVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
 
@@ -46,6 +47,13 @@ class Player {
     this.progressEl = refs.clipProgress;
     this.hintEl = refs.controlHint;
     this.exitBtn = refs.exitBtn;
+    this.controlsEl = refs.playerControls;
+    this.speedBtn = refs.speedBtn;
+    this.scrubTrack = refs.scrubTrack;
+    this.scrubFill = refs.scrubFill;
+    this.scrubHandle = refs.scrubHandle;
+    this.scrubCurrent = refs.scrubCurrent;
+    this.scrubTotal = refs.scrubTotal;
     this.shell = refs.shell;
     this.onStop = refs.onStop || (() => {});
     this.onToast = refs.onToast || (() => {});
@@ -60,6 +68,47 @@ class Player {
 
     this.exitBtn.addEventListener('click', () => this.requestStop());
     this.container.addEventListener('mousemove', () => this._showHint());
+    this._wireControls();
+  }
+
+  /** Speed button + scrubber drag/seek. Bound once; harmless when not running. */
+  _wireControls() {
+    if (this.speedBtn) {
+      this.speedBtn.addEventListener('click', () => this._cycleRate(1));
+    }
+    const track = this.scrubTrack;
+    if (!track) return;
+    const fracAt = (clientX) => {
+      const r = track.getBoundingClientRect();
+      return clamp((clientX - r.left) / Math.max(1, r.width), 0, 1);
+    };
+    const preview = (frac) => {
+      // Show where the release will land without churning the engine mid-drag.
+      this._renderScrub(frac * (this._totalDur || 0), this._totalDur || 0);
+    };
+    track.addEventListener('pointerdown', (e) => {
+      if (!this.running || !(this._totalDur > 0)) return;
+      e.preventDefault();
+      this._scrubbing = true;
+      this._scrubFrac = fracAt(e.clientX);
+      try { track.setPointerCapture(e.pointerId); } catch (_) { /* */ }
+      this._showHint();
+      preview(this._scrubFrac);
+    });
+    track.addEventListener('pointermove', (e) => {
+      if (!this._scrubbing) return;
+      this._scrubFrac = fracAt(e.clientX);
+      this._showHint();
+      preview(this._scrubFrac);
+    });
+    const release = (e) => {
+      if (!this._scrubbing) return;
+      this._scrubbing = false;
+      try { track.releasePointerCapture(e.pointerId); } catch (_) { /* */ }
+      this._seekGlobal(this._scrubFrac * (this._totalDur || 0));
+    };
+    track.addEventListener('pointerup', release);
+    track.addEventListener('pointercancel', release);
   }
 
   reset() {
@@ -97,6 +146,14 @@ class Player {
     this._pdfArmedAt = 0;
     this._pdfArmedMs = 0;
     this._pdfRemaining = null;
+    this._rate = 1;
+    this._timeline = [];
+    this._totalDur = 0;
+    this._scrubbing = false;
+    this._scrubFrac = 0;
+    this._stopPdfScrub();
+    if (this.speedBtn) this.speedBtn.textContent = this._fmtRate(1);
+    this._renderScrub(0, 0);
     if (this.pdfCanvas) this.pdfCanvas.classList.remove('is-active');
     this.videos[0].classList.add('is-active');
     this.videos[1].classList.remove('is-active');
@@ -115,6 +172,8 @@ class Player {
     this.running = true;
     this.sequence = this._buildBlock();
     this.pos = 0;
+    this._buildTimeline();
+    this._renderScrub(0, this._totalDur);
 
     this.container.hidden = false;
     this.container.focus();
@@ -153,6 +212,7 @@ class Player {
     for (const v of this.videos) { try { v.pause(); } catch (_) { /* */ } }
 
     clearTimeout(this._pdfTimer); this._pdfTimer = null;
+    this._stopPdfScrub();
     if (this.pdfCanvas) this.pdfCanvas.classList.remove('is-active');
     this._pdfDoc = null;
     const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
@@ -164,6 +224,7 @@ class Player {
     document.removeEventListener('webkitfullscreenchange', this._fsHandler);
     this._unbindKeys();
     this._setShellInert(false);
+    if (this.controlsEl) this.controlsEl.classList.add('is-hidden');
     this.titleEl.classList.remove('is-visible');
     if (this.noticeEl) this.noticeEl.classList.remove('is-visible');
     this._captionUrl = null;
@@ -275,6 +336,7 @@ class Player {
   async _resolveDuration(v, entry) {
     if (Number.isFinite(v.duration) && v.duration > 0) {
       this.onDuration(entry.server, v.duration);
+      this._reflowTimeline();
       return;
     }
     // Infinity / NaN (some WebM / fragmented MP4): probe by seeking far ahead.
@@ -293,7 +355,10 @@ class Player {
       v.addEventListener('seeked', h);
       try { v.currentTime = 1e7; } catch (_) { finish(); }
     });
-    if (Number.isFinite(v.duration) && v.duration > 0) this.onDuration(entry.server, v.duration);
+    if (Number.isFinite(v.duration) && v.duration > 0) {
+      this.onDuration(entry.server, v.duration);
+      this._reflowTimeline();
+    }
   }
 
   /** Load + duration-resolve + seek to IN + decode a frame; leaves paused at IN. */
@@ -437,9 +502,10 @@ class Player {
     }
   }
 
-  _activate(baseIdx) {
+  _activate(baseIdx, startSeg = 0, startOffset = 0) {
     if (this.base[baseIdx].clip.kind === 'pdf') { this._activatePdf(baseIdx); return; }
     // ---- existing video activate below (unchanged) ----
+    this._stopPdfScrub();
     if (this.pdfCanvas) this.pdfCanvas.classList.remove('is-active');
     const v = this.videos[this.activeIdx];
     const old = this.videos[1 - this.activeIdx];
@@ -447,10 +513,10 @@ class Player {
     const clip = entry.clip;
     const dur = Number.isFinite(v.duration) ? v.duration : null;
     this._segs = this._segments(clip, dur);
-    this._segIdx = 0;
-    const seg0 = this._segs[0];
-    const inP = seg0.inP;
-    const outP = seg0.outP;
+    this._segIdx = clamp(startSeg, 0, this._segs.length - 1);
+    const seg = this._segs[this._segIdx];
+    const inP = seg.inP;
+    const outP = seg.outP;
     this._inP = inP;
     this._outP = outP;
     this._activeClip = clip;
@@ -462,14 +528,25 @@ class Player {
 
     v.muted = this.muted;
     v.volume = this.volume;
+    v.playbackRate = this._rate;
 
     // Overlay text + initial visibility (re-shown on every clip entry).
     this.titleEl.textContent = clip.title || entry.name;
     this.titleEl.classList.toggle('is-visible', this.overlayEnabled);
 
     this._updateProgress();
-    this._playActive(v);
-    this._armWatchers(v, clip, inP, outP);
+    // Normal entry begins at IN (already seeked during _prepare); a seek lands
+    // mid-segment, so reseek before playing and arming the OUT watcher.
+    const begin = () => {
+      if (!this.running) return;
+      this._playActive(v);
+      this._armWatchers(v, clip, inP, outP);
+    };
+    if (this._segIdx !== 0 || startOffset > 0.01) {
+      this._seekTo(v, inP + Math.max(0, startOffset)).then(begin);
+    } else {
+      begin();
+    }
   }
 
   _activatePdf(baseIdx) {
@@ -490,6 +567,7 @@ class Player {
     this._pdfPaused = false;
     this._pdfRemaining = null;
     this._updateProgress();
+    this._startPdfScrub();
 
     const url = entry.server ? entry.server.url : '/videos/' + encodePath(entry.name);
     loadDoc(url).then(({ doc }) => {
@@ -511,13 +589,16 @@ class Player {
     const tok = ++this.activeToken; // invalidate any prior timer
     const cur = this._pdfPages[this._pdfIdx];
     renderPage(this._pdfDoc, cur.page, this.pdfCanvas).catch(() => {});
-    this._armPdfTimer(cur.seconds * 1000, tok);
+    // Page duration is content time; the wall-clock timeout scales with speed.
+    this._armPdfTimer((cur.seconds * 1000) / (this._rate || 1), tok);
   }
 
+  /** `ms` is a real wall-clock timeout (already speed-scaled by the caller). */
   _armPdfTimer(ms, tok) {
     clearTimeout(this._pdfTimer);
     this._pdfArmedAt = performance.now();
     this._pdfArmedMs = ms;
+    this._pdfArmedRate = this._rate || 1; // rate this page was scheduled at
     this._pdfTimer = setTimeout(() => {
       if (tok !== this.activeToken || !this.running) return;
       this._pdfAdvancePage();
@@ -566,6 +647,7 @@ class Player {
         if (tok !== this.activeToken || !this.running) return;
         const t = meta ? meta.mediaTime : v.currentTime;
         this._updateCaption(t);
+        this._updateScrubber();
         if (outP != null && t >= outP - EPS) { this._segmentDone('out'); return; }
         this._rvfcHandle = v.requestVideoFrameCallback(tick);
         this._rvfcVideo = v;
@@ -577,6 +659,7 @@ class Player {
         if (tok !== this.activeToken || !this.running) return;
         const t = v.currentTime;
         this._updateCaption(t);
+        this._updateScrubber();
         if (outP != null && t >= outP - EPS) this._segmentDone('out');
       };
       v.addEventListener('timeupdate', onTU);
@@ -620,6 +703,208 @@ class Player {
       segLabel = ` · seg ${this._segIdx + 1}/${this._segs.length}`;
     }
     this.progressEl.textContent = `${inCycle} / ${n}${cycleLabel}${segLabel}`;
+  }
+
+  // ===================== combined timeline: scrubber + speed =====================
+  /**
+   * Flatten every segment/page of every clip into one ordered timeline (one
+   * cycle, in playback order), each node tagged with its start time on the
+   * combined showreel. This is what the scrubber maps position <-> media
+   * against. Durations come from the clips' known lengths and are refreshed
+   * (via _reflowTimeline) as clips resolve their real duration during playback.
+   */
+  _buildTimeline() {
+    const n = this.base.length;
+    const nodes = [];
+    let acc = 0;
+    for (let p = 0; p < n; p++) {
+      const baseIdx = this.sequence[p];
+      const clip = this.base[baseIdx].clip;
+      if (clip.kind === 'pdf') {
+        const pages = (clip.pages || []).filter((pg) => clip.pageCount == null || pg.page <= clip.pageCount);
+        const list = pages.length ? pages : [{ page: 1, seconds: 6 }];
+        list.forEach((pg, pi) => {
+          const d = Math.max(0, Number(pg.seconds) || 0);
+          nodes.push({ pos: p, baseIdx, kind: 'pdf', pageIdx: pi, startGlobal: acc, duration: d });
+          acc += d;
+        });
+      } else {
+        const dur = Number.isFinite(clip.duration) ? clip.duration : null;
+        const segs = this._segments(clip, dur);
+        segs.forEach((s, si) => {
+          const d = (s.outP != null) ? Math.max(0, s.outP - s.inP)
+            : (dur != null ? Math.max(0, dur - s.inP) : 0);
+          nodes.push({ pos: p, baseIdx, kind: 'video', segIdx: si, inP: s.inP, outP: s.outP, startGlobal: acc, duration: d });
+          acc += d;
+        });
+      }
+    }
+    this._timeline = nodes;
+    this._totalDur = acc;
+  }
+
+  /** Rebuild durations once a clip resolves its real length, keeping the scrubber honest. */
+  _reflowTimeline() {
+    if (!this.running || !this.base || !this.base.length) return;
+    this._buildTimeline();
+    if (!this._scrubbing) this._updateScrubber();
+  }
+
+  /** The timeline node currently playing (pos-in-cycle + active segment/page). */
+  _activeNode() {
+    if (!this._timeline || !this._timeline.length || !this.base.length) return null;
+    const posMod = this.pos % this.base.length;
+    for (const nd of this._timeline) {
+      if (nd.pos !== posMod) continue;
+      if (nd.kind === 'pdf') { if (nd.pageIdx === this._pdfIdx) return nd; }
+      else if (nd.segIdx === this._segIdx) return nd;
+    }
+    return null;
+  }
+
+  /** Current position on the combined timeline, in seconds. */
+  _globalNow() {
+    const node = this._activeNode();
+    if (!node) return 0;
+    if (node.kind === 'pdf') {
+      const rate = this._pdfArmedRate || this._rate || 1;
+      let remRealMs;
+      if (this._pdfPaused) remRealMs = (this._pdfRemaining != null ? this._pdfRemaining : this._pdfArmedMs) || 0;
+      else remRealMs = Math.max(0, (this._pdfArmedMs || 0) - (performance.now() - (this._pdfArmedAt || 0)));
+      const remContent = (remRealMs / 1000) * rate;
+      return node.startGlobal + clamp(node.duration - remContent, 0, node.duration);
+    }
+    const v = this.videos[this.activeIdx];
+    const off = clamp((v.currentTime || 0) - (this._inP || 0), 0, node.duration);
+    return node.startGlobal + off;
+  }
+
+  _updateScrubber() {
+    if (this._scrubbing) return; // user dragging the handle; don't fight them
+    this._renderScrub(this._globalNow(), this._totalDur || 0);
+  }
+
+  _renderScrub(cur, total) {
+    const frac = total > 0 ? clamp(cur / total, 0, 1) : 0;
+    const pct = (frac * 100).toFixed(3) + '%';
+    if (this.scrubFill) this.scrubFill.style.width = pct;
+    if (this.scrubHandle) this.scrubHandle.style.left = pct;
+    if (this.scrubCurrent) this.scrubCurrent.textContent = total > 0 ? formatShort(cur) : '0:00';
+    if (this.scrubTotal) this.scrubTotal.textContent = total > 0 ? formatShort(total) : '0:00';
+    if (this.scrubTrack) this.scrubTrack.setAttribute('aria-valuenow', String(Math.round(frac * 100)));
+  }
+
+  /** PDFs have no media ticks, so drive the scrubber off a light interval. */
+  _startPdfScrub() {
+    this._stopPdfScrub();
+    this._pdfScrubTimer = setInterval(() => {
+      if (this.running && !this._scrubbing) this._updateScrubber();
+    }, 200);
+  }
+
+  _stopPdfScrub() {
+    if (this._pdfScrubTimer) { clearInterval(this._pdfScrubTimer); this._pdfScrubTimer = null; }
+  }
+
+  // ---- playback speed ----
+  _fmtRate(r) { return `${Number(r.toFixed(2))}×`; }
+
+  _cycleRate(dir) {
+    let i = SPEEDS.indexOf(this._rate);
+    if (i === -1) i = SPEEDS.indexOf(1);
+    this._setRate(SPEEDS[clamp(i + dir, 0, SPEEDS.length - 1)]);
+  }
+
+  _setRate(rate) {
+    this._rate = rate;
+    if (this.speedBtn) this.speedBtn.textContent = this._fmtRate(rate);
+    for (const vid of this.videos) { try { vid.playbackRate = rate; } catch (_) { /* */ } }
+    // The OUT fallback timer is wall-clock; re-arm it so it matches the new rate.
+    const v = this.videos[this.activeIdx];
+    if (this._activeClip && this._activeClip.kind !== 'pdf' && v && !v.paused) {
+      this._armOutTimer(v, this._outP);
+    }
+    this.onAnnounce(`Speed ${this._fmtRate(rate)}`);
+    this._showHint();
+  }
+
+  // ---- seeking the combined timeline ----
+  /** Seek to global time T (seconds) anywhere across the whole showreel. */
+  _seekGlobal(T) {
+    if (!this.running || this.transitionInProgress) return;
+    const total = this._totalDur || 0;
+    if (!(total > 0) || !this._timeline.length) return;
+    T = clamp(T, 0, Math.max(0, total - 0.05));
+    let node = this._timeline[0];
+    for (const nd of this._timeline) { if (T >= nd.startGlobal) node = nd; else break; }
+    const offset = clamp(T - node.startGlobal, 0, Math.max(0, node.duration));
+    const n = this.base.length;
+    if (node.pos === (this.pos % n) && this._activeClip) {
+      // Target clip is already on screen — seek in place, no buffer swap.
+      if (node.kind === 'pdf') this._seekActivePdf(node.pageIdx);
+      else this._seekActiveVideoSeg(node.segIdx, offset);
+      return;
+    }
+    const targetPos = Math.floor(this.pos / n) * n + node.pos;
+    this._jumpToNode(node, targetPos, offset);
+  }
+
+  _seekActiveVideoSeg(segIdx, offset) {
+    const v = this.videos[this.activeIdx];
+    this._clearWatchers();
+    this._segIdx = clamp(segIdx, 0, this._segs.length - 1);
+    const seg = this._segs[this._segIdx];
+    this._inP = seg.inP;
+    this._outP = seg.outP;
+    this._updateProgress();
+    this._seekTo(v, (seg.inP || 0) + Math.max(0, offset)).then(() => {
+      if (!this.running) return;
+      v.playbackRate = this._rate;
+      if (v.paused) this._playActive(v);
+      this._armWatchers(v, this._activeClip, seg.inP, seg.outP);
+      this._updateScrubber();
+    });
+  }
+
+  _seekActivePdf(pageIdx) {
+    this._clearWatchers();
+    this._pdfIdx = clamp(pageIdx, 0, this._pdfPages.length - 1);
+    this._pdfPaused = false;
+    this._pdfRemaining = null;
+    this._updateProgress();
+    this._startPdfScrub();
+    if (this._pdfDoc) this._renderPdfAndArm();
+  }
+
+  /** Cross-clip seek: prepare the target on standby, then activate it mid-segment. */
+  _jumpToNode(node, targetPos, offset) {
+    this.transitionInProgress = true;
+    this._clearWatchers();
+    const baseIdx = node.baseIdx;
+    const standby = this.videos[1 - this.activeIdx];
+    this._prepare(standby, baseIdx)
+      .then(() => {
+        if (!this.running) return;
+        this.pos = targetPos;
+        this.activeIdx = 1 - this.activeIdx;
+        if (node.kind === 'pdf') {
+          this._activate(baseIdx);
+          this._pdfIdx = clamp(node.pageIdx, 0, this._pdfPages.length - 1);
+          this._updateProgress();
+        } else {
+          this._activate(baseIdx, node.segIdx, offset);
+        }
+        this.transitionInProgress = false;
+        this._preloadNext();
+        this._updateScrubber();
+      })
+      .catch((e) => {
+        if (!this.running) return;
+        this.failedBase.add(baseIdx);
+        this._recordFailure(baseIdx, e);
+        this.transitionInProgress = false;
+        this.advance('seek-failed');
+      });
   }
 
   // ===================== captions =====================
@@ -751,7 +1036,8 @@ class Player {
         if (this._activeClip && this._activeClip.kind === 'pdf') {
           if (this._pdfPaused) {
             this._pdfPaused = false;
-            this._armPdfTimer(this._pdfRemaining != null ? this._pdfRemaining : this._pdfPages[this._pdfIdx].seconds * 1000, this.activeToken);
+            // _pdfRemaining is already real ms; the fallback is content ms.
+            this._armPdfTimer(this._pdfRemaining != null ? this._pdfRemaining : (this._pdfPages[this._pdfIdx].seconds * 1000) / (this._rate || 1), this.activeToken);
           } else {
             this._pdfPaused = true;
             clearTimeout(this._pdfTimer); this._pdfTimer = null;
@@ -800,6 +1086,14 @@ class Player {
         e.preventDefault();
         if (!(document.fullscreenElement || document.webkitFullscreenElement)) this._requestFs();
         break;
+      case '<': case ',':
+        e.preventDefault();
+        this._cycleRate(-1);
+        break;
+      case '>': case '.':
+        e.preventDefault();
+        this._cycleRate(1);
+        break;
       default:
         break;
     }
@@ -816,6 +1110,7 @@ class Player {
     this._updateProgress();
     this._seekTo(v, this._inP);
     if (this.overlayEnabled) { this.titleEl.textContent = this._activeClip ? (this._activeClip.title || '') : ''; this.titleEl.classList.add('is-visible'); }
+    v.playbackRate = this._rate;
     if (v.paused) v.play().catch(() => {});
     this._armWatchers(v, this._activeClip, this._inP, this._outP); // fresh timing
   }
@@ -830,8 +1125,13 @@ class Player {
 
   _showHint() {
     this.hintEl.classList.remove('is-hidden');
+    if (this.controlsEl) this.controlsEl.classList.remove('is-hidden');
     clearTimeout(this._hintTimer);
-    this._hintTimer = setTimeout(() => this.hintEl.classList.add('is-hidden'), HINT_HIDE_MS);
+    this._hintTimer = setTimeout(() => {
+      this.hintEl.classList.add('is-hidden');
+      // Keep the scrubber up while the user is dragging it.
+      if (this.controlsEl && !this._scrubbing) this.controlsEl.classList.add('is-hidden');
+    }, HINT_HIDE_MS);
   }
 
   _setShellInert(on) {

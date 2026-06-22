@@ -95,7 +95,21 @@ as a headline at the top for the whole of *every* clip, including loop repeats.
 ### Keyboard (during playback)
 
 `Esc` exit · `Space` pause/resume · `→` next clip · `←` restart clip ·
-`↑`/`↓` volume · `M` mute · `F` re-enter fullscreen.
+`↑`/`↓` volume · `M` mute · `F` re-enter fullscreen · `<`/`>` (or `,`/`.`)
+slower/faster.
+
+### On-screen controls (during playback)
+
+A control bar at the bottom (revealed on mouse-move, like the top hint) holds:
+
+- A **speed** button — click to step up through `0.25× … 2×` (wraps), or use
+  the `<`/`>` keys. The chosen rate applies to every clip, including loop
+  repeats and PDF page timing.
+- A **scrubber** spanning the **whole combined showreel** — all segments of all
+  clips, end to end, in playback order. Drag it (or click anywhere on the track)
+  to jump to any point across the entire reel, even across clip boundaries; the
+  times on either side show the current position and the reel's total length.
+  In a looping mode the bar tracks the current cycle.
 
 ## Data the server returns
 
