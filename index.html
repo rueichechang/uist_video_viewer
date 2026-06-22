@@ -255,9 +255,24 @@
       <span id="clipProgress" class="control-hint__progress"></span>
       <span class="control-hint__keys">
         <kbd>Esc</kbd> exit · <kbd>Space</kbd> pause · <kbd>←</kbd>/<kbd>→</kbd> clip ·
-        <kbd>↑</kbd>/<kbd>↓</kbd> volume · <kbd>M</kbd> mute
+        <kbd>↑</kbd>/<kbd>↓</kbd> volume · <kbd>M</kbd> mute · <kbd>&lt;</kbd>/<kbd>&gt;</kbd> speed
       </span>
       <button id="exitBtn" class="btn btn--ghost btn--sm" type="button">✕ Exit</button>
+    </div>
+
+    <!-- Bottom control bar: playback speed + a scrubber spanning the whole
+         combined showreel (all segments of all clips, in playback order). -->
+    <div id="playerControls" class="player-controls">
+      <button id="speedBtn" class="btn btn--ghost btn--sm player-controls__speed" type="button"
+              aria-label="Playback speed">1×</button>
+      <span id="scrubCurrent" class="player-controls__time">0:00</span>
+      <div id="scrubTrack" class="scrub" role="slider" tabindex="0"
+           aria-label="Seek across the whole showreel"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div id="scrubFill" class="scrub__fill"></div>
+        <div id="scrubHandle" class="scrub__handle"></div>
+      </div>
+      <span id="scrubTotal" class="player-controls__time">0:00</span>
     </div>
   </div>
 

@@ -712,8 +712,9 @@ class UI {
     r.rangeIn.addEventListener('input', () => onRange('in'));
     r.rangeOut.addEventListener('input', () => onRange('out'));
 
-    // Reflect the preview's playback position as a playhead on the trim track.
-    r.previewVideo.addEventListener('timeupdate', () => this._updatePlayhead());
+    // Reflect the preview's playback position as a playhead on the trim track,
+    // and stop playback at the selected segment's end.
+    r.previewVideo.addEventListener('timeupdate', () => { this._stopAtSegmentEnd(); this._updatePlayhead(); });
     r.previewVideo.addEventListener('seeked', () => this._updatePlayhead());
 
     const onNum = (field) => {
@@ -911,18 +912,27 @@ class UI {
     const clip = store.getClip(this.selected);
     if (!clip) return;
     const v = this.r.previewVideo;
-    const segs = store.effectiveSegments(clip);
-    const { in: i, out: o } = segs[this._curSegIndex(clip)];
-    if (this._trimWatch) { v.removeEventListener('timeupdate', this._trimWatch); this._trimWatch = null; }
-    v.currentTime = i;
+    const seg = store.effectiveSegments(clip)[this._curSegIndex(clip)];
+    // Seek to the segment's IN and play; _stopAtSegmentEnd (on timeupdate)
+    // pauses it again once it reaches the segment's OUT.
+    v.currentTime = seg.in;
     v.muted = true;
     v.play().catch(() => {});
-    if (o != null) {
-      this._trimWatch = () => {
-        if (v.currentTime >= o - 0.03) { v.pause(); v.removeEventListener('timeupdate', this._trimWatch); this._trimWatch = null; }
-      };
-      v.addEventListener('timeupdate', this._trimWatch);
-    }
+  }
+
+  /**
+   * Pause the preview when it reaches the selected segment's OUT, so previewing
+   * a segment — whether started with the button or the video's own controls —
+   * stops at the segment's end instead of running on into the rest of the clip.
+   */
+  _stopAtSegmentEnd() {
+    const v = this.r.previewVideo;
+    if (!v || v.paused || v.seeking) return;
+    const clip = this.selected ? store.getClip(this.selected) : null;
+    if (!clip || clip.kind === 'pdf') return;
+    const seg = store.effectiveSegments(clip)[this._curSegIndex(clip)];
+    if (!seg || seg.out == null) return;
+    if (v.currentTime >= seg.out - 0.03) v.pause();
   }
 
   _validateTitle() {

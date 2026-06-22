@@ -429,6 +429,50 @@ kbd {
   border-radius: 6px;
 }
 
+/* Bottom control bar: playback-speed button + a scrubber for the whole
+   combined showreel. Shares the control-hint's auto-hide on idle. */
+.player-controls {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  z-index: 5;
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 22px calc(14px + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(to top, rgba(0,0,0,0.7), rgba(0,0,0,0));
+  color: #fff;
+  opacity: 1;
+  transition: opacity 0.4s ease;
+}
+.player-controls.is-hidden { opacity: 0; pointer-events: none; }
+.player-controls .btn { color: #fff; border-color: rgba(255,255,255,0.3); }
+.player-controls__speed { min-width: 56px; font-variant-numeric: tabular-nums; }
+.player-controls__time {
+  font-variant-numeric: tabular-nums; font-size: 13px; color: #e6ebf2;
+  min-width: 44px; text-align: center;
+}
+.player-controls__time:last-of-type { text-align: center; }
+
+/* Scrubber track spanning the combined timeline. */
+.scrub {
+  position: relative; flex: 1 1 auto; height: 16px;
+  display: flex; align-items: center;
+  cursor: pointer; touch-action: none;
+}
+.scrub::before {
+  content: ''; position: absolute; left: 0; right: 0; height: 5px;
+  background: rgba(255,255,255,0.28); border-radius: 999px;
+}
+.scrub__fill {
+  position: absolute; left: 0; height: 5px; width: 0%;
+  background: var(--accent); border-radius: 999px;
+}
+.scrub__handle {
+  position: absolute; left: 0%; transform: translateX(-50%);
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; border: 2px solid var(--accent-strong);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+.scrub:focus-visible { outline: none; }
+.scrub:focus-visible .scrub__handle { box-shadow: 0 0 0 3px rgba(79,157,255,0.6); }
+
 /* ----------------------------- toasts ------------------------------ */
 .toasts {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
